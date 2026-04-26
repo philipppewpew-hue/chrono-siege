@@ -87,26 +87,40 @@ export class GridManager {
     for (let y = 0; y < GRID_ROWS; y++) {
       this.tileSprites[y] = [];
       for (let x = 0; x < GRID_COLS; x++) {
-        const px = GRID_OFFSET_X + x * TILE_SIZE;
-        const py = GRID_OFFSET_Y + y * TILE_SIZE;
+        const cx = GRID_OFFSET_X + x * TILE_SIZE + TILE_SIZE / 2;
+        const cy = GRID_OFFSET_Y + y * TILE_SIZE + TILE_SIZE / 2;
 
-        let texture: string;
+        // Always render grass underneath
+        const grassKey = (x + y) % 5 === 0 ? 'px_grass2' : 'px_grass';
+        const grass = this.scene.add.image(cx, cy, grassKey)
+          .setDisplaySize(TILE_SIZE, TILE_SIZE);
+        this.tileSprites[y][x] = grass;
+
+        // Add overlay sprites on top for special tiles
         switch (this.grid[y][x]) {
-          case CellType.SPAWN:
-            texture = 'tile_spawn';
+          case CellType.SPAWN: {
+            const marker = this.scene.add.image(cx, cy, 'px_mushroom')
+              .setDisplaySize(TILE_SIZE * 0.7, TILE_SIZE * 0.7)
+              .setTint(0xffaaaa);
+            (this.tileSprites[y][x] as any)._overlay = marker;
             break;
-          case CellType.BASE:
-            texture = 'tile_base';
+          }
+          case CellType.BASE: {
+            const marker = this.scene.add.image(cx, cy, 'px_chest')
+              .setDisplaySize(TILE_SIZE * 0.85, TILE_SIZE * 0.85);
+            (this.tileSprites[y][x] as any)._overlay = marker;
             break;
-          case CellType.BLOCKED:
-            texture = 'tile_blocked';
+          }
+          case CellType.BLOCKED: {
+            // Vary blocked tiles between rock, tree, water for visual interest
+            const variant = (x * 7 + y * 13) % 3;
+            const key = variant === 0 ? 'px_rock' : variant === 1 ? 'px_tree' : 'px_water';
+            const obj = this.scene.add.image(cx, cy, key)
+              .setDisplaySize(TILE_SIZE * 0.9, TILE_SIZE * 0.9);
+            (this.tileSprites[y][x] as any)._overlay = obj;
             break;
-          default:
-            texture = 'tile_grass';
+          }
         }
-
-        const tile = this.scene.add.image(px, py, texture).setOrigin(0, 0);
-        this.tileSprites[y][x] = tile;
       }
     }
   }
@@ -129,7 +143,7 @@ export class GridManager {
   removeTower(x: number, y: number): void {
     if (this.grid[y][x] === CellType.TOWER) {
       this.grid[y][x] = CellType.EMPTY;
-      this.tileSprites[y][x].setTexture('tile_grass');
+      // Grass is already underneath; nothing to change
       this.recalculatePath();
     }
   }
