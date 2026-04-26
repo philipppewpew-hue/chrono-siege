@@ -2,6 +2,3 @@ node_modules/
 dist/
 .vite/
 *.local
-assets-raw/
-.claude/
-ideas.txt

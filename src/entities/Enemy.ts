@@ -65,12 +65,10 @@ export class Enemy extends Phaser.GameObjects.Container {
       this.phaseTimer = 2 + Math.random() * 3;
     }
 
-    // Sprite — pixel art is 16x16, scale to fit enemy size (~36px display)
+    // Sprite
     const texKey = isMini ? `enemy_${enemyType}_mini` : `enemy_${enemyType}`;
     this.sprite = scene.add.image(0, 0, texKey);
-    const displaySize = TILE_SIZE * 0.75 * this.def.size;
-    this.sprite.setDisplaySize(displaySize, displaySize);
-    if (isMini) this.sprite.setDisplaySize(displaySize * 0.6, displaySize * 0.6);
+    if (isMini) this.sprite.setScale(0.6);
     this.add(this.sprite);
 
     // HP bar
@@ -262,13 +260,9 @@ export class Enemy extends Phaser.GameObjects.Container {
       this.x += dx * ratio;
       this.y += dy * ratio;
 
-      // Walking animation: bob the sprite up/down + flip based on direction
-      const bobPhase = (this.scene.time.now / 150) * (this.speed / 80);
-      this.sprite.y = Math.sin(bobPhase) * 2;
-      // Face the direction of movement (mirror sprite)
-      if (Math.abs(dx) > Math.abs(dy) * 0.3) {
-        this.sprite.setFlipX(dx < 0);
-      }
+      // Rotate sprite toward movement direction
+      const angle = Math.atan2(dy, dx);
+      this.sprite.setRotation(angle + Math.PI / 2);
     }
 
     // Update HP bar position
