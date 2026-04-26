@@ -65,7 +65,8 @@ export class Tower extends Phaser.GameObjects.Container {
   }
 
   get currentRange(): number {
-    return this.def.range * this.def.rangeScale[this.level] * TILE_SIZE;
+    const rangeBonus = (this as any)._rangeBonus ?? 0;
+    return this.def.range * this.def.rangeScale[this.level] * TILE_SIZE + rangeBonus;
   }
 
   get currentFireRate(): number {

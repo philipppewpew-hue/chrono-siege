@@ -1,4 +1,5 @@
 import Peer, { DataConnection } from 'peerjs';
+import { GameMode, SpecialistClass } from '../config';
 
 // ============================================================
 // Network events that get synced between players
@@ -7,6 +8,8 @@ export enum NetEventType {
   // Lobby
   PLAYER_READY = 'player_ready',
   GAME_START = 'game_start',
+  MODE_CHANGE = 'mode_change',
+  CLASS_CHANGE = 'class_change',
 
   // Game actions (sent by either player)
   TOWER_PLACE = 'tower_place',
@@ -14,7 +17,14 @@ export enum NetEventType {
   TOWER_SELL = 'tower_sell',
   WAVE_START = 'wave_start',
   TIME_WARP = 'time_warp',
+  ABILITY_USE = 'ability_use',
   SPEED_CHANGE = 'speed_change',
+  GIFT_GOLD = 'gift_gold',
+
+  // Send mode
+  SEND_ENEMY = 'send_enemy',
+  SEND_LIVES_UPDATE = 'send_lives_update',
+  SEND_GAME_OVER = 'send_game_over',
 
   // Host → guest state sync
   GOLD_SYNC = 'gold_sync',
@@ -23,7 +33,7 @@ export enum NetEventType {
   GAME_OVER = 'game_over',
   ENEMY_SPAWN = 'enemy_spawn',
 
-  // Cursor sync (show where other player is looking)
+  // Cursor sync
   CURSOR_MOVE = 'cursor_move',
 
   // Connection
@@ -66,6 +76,11 @@ export class NetworkManager {
   public roomCode: string = '';
   public playerNumber: number = 0; // 1 = host, 2 = guest
   public latency: number = 0;
+
+  // Mode / class state (lobby)
+  public gameMode: GameMode = 'coop';
+  public myClass: SpecialistClass = 'commander';
+  public peerClass: SpecialistClass = 'commander';
 
   private peer: Peer | null = null;
   private connection: DataConnection | null = null;
@@ -286,6 +301,9 @@ export class NetworkManager {
     this.isMultiplayer = false;
     this.roomCode = '';
     this.playerNumber = 0;
+    this.gameMode = 'coop';
+    this.myClass = 'commander';
+    this.peerClass = 'commander';
     this.listeners.clear();
   }
 }

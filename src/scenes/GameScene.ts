@@ -2,7 +2,8 @@ import * as Phaser from 'phaser';
 import {
   GAME_WIDTH, GAME_HEIGHT, TILE_SIZE, GRID_COLS, GRID_ROWS,
   GRID_OFFSET_X, GRID_OFFSET_Y, STARTING_GOLD, STARTING_LIVES,
-  TOWERS, TOWER_ORDER, COLORS
+  TOWERS, TOWER_ORDER, COLORS,
+  GameMode, SpecialistClass, SPECIALISTS,
 } from '../config';
 import { GridManager, CellType } from '../managers/GridManager';
 import { WaveManager } from '../managers/WaveManager';
@@ -56,6 +57,35 @@ export class GameScene extends Phaser.Scene {
   private connectionLabel: Phaser.GameObjects.Text | null = null;
   private goldSyncTimer: number = 0;
 
+  // Mode + class state
+  public gameMode: GameMode = 'solo';
+  public myClass: SpecialistClass = 'commander';
+  public peerClass: SpecialistClass = 'commander';
+
+  // Specialist ability (replaces Time Warp)
+  private abilityCooldown: number = 0;
+  private abilityActive: boolean = false;
+  private abilityActiveTimer: number = 0;
+  private rallyMultiplier: number = 1; // commander rally
+  private reinforceBonus: number = 0;  // architect range bonus
+  private placingMeteor: boolean = false; // sorcerer
+
+  // Send Mode
+  private killStreak: number = 0;
+  private killStreakTimer: number = 0;
+  private peerLives: number = STARTING_LIVES;
+  private incomingEnemies: { type: string; hpScale: number }[] = [];
+  private sendStatusText: Phaser.GameObjects.Text | null = null;
+
+  // Split Lanes
+  private goldP1: number = STARTING_GOLD;
+  private goldP2: number = STARTING_GOLD;
+  private livesP1: number = STARTING_LIVES;
+  private livesP2: number = STARTING_LIVES;
+  private giftBtn: Phaser.GameObjects.Container | null = null;
+  private peerGoldText: Phaser.GameObjects.Text | null = null;
+  private peerLivesText: Phaser.GameObjects.Text | null = null;
+
   // HUD elements
   private goldText!: Phaser.GameObjects.Text;
   private livesText!: Phaser.GameObjects.Text;
@@ -98,9 +128,26 @@ export class GameScene extends Phaser.Scene {
     this.timeWarpActive = false;
     this.spawnCounter = 0;
     this.goldSyncTimer = 0;
+    this.abilityCooldown = 0;
+    this.abilityActive = false;
+    this.abilityActiveTimer = 0;
+    this.rallyMultiplier = 1;
+    this.reinforceBonus = 0;
+    this.placingMeteor = false;
+    this.killStreak = 0;
+    this.killStreakTimer = 0;
+    this.incomingEnemies = [];
+    this.peerLives = STARTING_LIVES;
+    this.goldP1 = STARTING_GOLD;
+    this.goldP2 = STARTING_GOLD;
+    this.livesP1 = STARTING_LIVES;
+    this.livesP2 = STARTING_LIVES;
 
     // Multiplayer setup
     this.isMultiplayer = networkManager.isMultiplayer && networkManager.isConnected;
+    this.gameMode = networkManager.isMultiplayer ? networkManager.gameMode : 'solo';
+    this.myClass = networkManager.myClass || 'commander';
+    this.peerClass = networkManager.peerClass || 'commander';
 
     // Initialize managers
     this.gridManager = new GridManager(this);
@@ -125,6 +172,7 @@ export class GameScene extends Phaser.Scene {
     this.createInfoPanel();
     this.createActionButtons();
     this.createTimeWarpButton();
+    this.createGiftButton();
     this.createSpeedControls();
     this.createStartWaveButton();
 
@@ -174,6 +222,28 @@ export class GameScene extends Phaser.Scene {
       this.updateTimeWarpUI();
     }
 
+    // Specialist ability cooldown + active timer
+    if (this.abilityCooldown > 0) {
+      this.abilityCooldown -= delta;
+      if (this.abilityCooldown <= 0) this.abilityCooldown = 0;
+    }
+    if (this.abilityActive) {
+      this.abilityActiveTimer -= delta;
+      if (this.abilityActiveTimer <= 0) {
+        this.abilityActive = false;
+        this.rallyMultiplier = 1;
+        this.reinforceBonus = 0;
+        for (const t of this.towers) (t as any)._rangeBonus = 0;
+      }
+    }
+    this.updateAbilityUI();
+
+    // Send mode kill streak decay
+    if (this.killStreakTimer > 0) {
+      this.killStreakTimer -= delta / 1000;
+      if (this.killStreakTimer <= 0) this.killStreak = 0;
+    }
+
     // Wave manager
     this.waveManager.update(scaledDelta);
 
@@ -188,9 +258,10 @@ export class GameScene extends Phaser.Scene {
       enemy.update(enemyDelta, this.enemies);
     }
 
-    // Update towers
+    // Update towers (rally doubles fire rate via faster delta)
+    const towerDelta = scaledDelta * this.rallyMultiplier;
     for (const tower of this.towers) {
-      tower.update(time, scaledDelta, this.enemies, this.fireTower.bind(this));
+      tower.update(time, towerDelta, this.enemies, this.fireTower.bind(this));
     }
 
     // Update projectiles
@@ -225,6 +296,60 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ========================
+  // MODE / CLASS HELPERS
+  // ========================
+
+  /** Effective tower cost based on my specialist class */
+  private getTowerCost(towerId: string): number {
+    const def = TOWERS[towerId];
+    const mult = SPECIALISTS[this.myClass].towerCostMultiplier;
+    return Math.floor(def.cost * mult);
+  }
+
+  /** Effective tower upgrade cost */
+  private getUpgradeCost(tower: Tower): number | null {
+    const cost = tower.upgradeCost;
+    if (cost === null) return null;
+    return Math.floor(cost * SPECIALISTS[this.myClass].towerCostMultiplier);
+  }
+
+  /** My current gold (handles per-player split for split-lanes/send) */
+  private get myGold(): number {
+    if (this.gameMode === 'splitlanes') {
+      return networkManager.playerNumber === 2 ? this.goldP2 : this.goldP1;
+    }
+    return this.gold;
+  }
+  private addGold(amount: number): void {
+    if (this.gameMode === 'splitlanes') {
+      if (networkManager.playerNumber === 2) this.goldP2 += amount;
+      else this.goldP1 += amount;
+    } else {
+      this.gold += amount;
+    }
+  }
+  private spendGold(amount: number): void {
+    this.addGold(-amount);
+  }
+
+  /** My current lives (handles split modes) */
+  private get myLives(): number {
+    if (this.gameMode === 'splitlanes') {
+      return networkManager.playerNumber === 2 ? this.livesP2 : this.livesP1;
+    }
+    return this.lives;
+  }
+  private subtractLives(amount: number, ownerPlayer?: number): void {
+    if (this.gameMode === 'splitlanes') {
+      const target = ownerPlayer ?? networkManager.playerNumber ?? 1;
+      if (target === 2) this.livesP2 = Math.max(0, this.livesP2 - amount);
+      else this.livesP1 = Math.max(0, this.livesP1 - amount);
+    } else {
+      this.lives = Math.max(0, this.lives - amount);
+    }
+  }
+
+  // ========================
   // MULTIPLAYER SETUP
   // ========================
 
@@ -237,19 +362,38 @@ export class GameScene extends Phaser.Scene {
       fontStyle: 'bold',
     }).setDepth(200).setVisible(false);
 
-    // Connection indicator
+    // Connection indicator with mode and class
     const pNum = networkManager.playerNumber;
     const pColor = pNum === 1 ? '#44aaff' : '#44ff88';
-    this.connectionLabel = this.add.text(GAME_WIDTH - 160, 14, `P${pNum} CO-OP`, {
-      fontSize: '12px', fontFamily: 'monospace', color: pColor, fontStyle: 'bold',
-    }).setDepth(81);
+    const mode = this.gameMode.toUpperCase();
+    const className = SPECIALISTS[this.myClass].name.toUpperCase();
+
+    this.connectionLabel = this.add.text(GAME_WIDTH - 16, 12, `${mode} • P${pNum} ${className}`, {
+      fontSize: '11px', fontFamily: 'monospace', color: pColor, fontStyle: 'bold',
+    }).setOrigin(1, 0).setDepth(81);
+
+    // Send mode: show peer's lives
+    if (this.gameMode === 'send') {
+      this.peerLivesText = this.add.text(GAME_WIDTH - 16, 28, `OPP: ${this.peerLives}`, {
+        fontSize: '11px', fontFamily: 'monospace', color: '#ff8888',
+      }).setOrigin(1, 0).setDepth(81);
+    }
+
+    // Split lanes: show peer's gold and lives
+    if (this.gameMode === 'splitlanes') {
+      const peerGold = networkManager.playerNumber === 2 ? this.goldP1 : this.goldP2;
+      const peerLives = networkManager.playerNumber === 2 ? this.livesP1 : this.livesP2;
+      const peerNum = networkManager.playerNumber === 2 ? 1 : 2;
+      this.peerGoldText = this.add.text(GAME_WIDTH - 16, 28, `P${peerNum}: ${peerGold}g  ${peerLives}♥`, {
+        fontSize: '11px', fontFamily: 'monospace', color: '#aabbcc',
+      }).setOrigin(1, 0).setDepth(81);
+    }
 
     // Handle disconnect
     networkManager.onDisconnected = () => {
       if (this.connectionLabel) {
         this.connectionLabel.setText('DISCONNECTED').setColor('#ff4444');
       }
-      // Continue as solo
       this.isMultiplayer = false;
     };
   }
@@ -321,6 +465,33 @@ export class GameScene extends Phaser.Scene {
       const { x, y } = event.data;
       this.updatePeerCursor(x, y);
     });
+
+    // Send Mode: receive enemies from opponent
+    networkManager.on(NetEventType.SEND_ENEMY, (event) => {
+      this.receiveSentEnemy(event.data.type);
+    });
+
+    // Send Mode: peer's lives update (for UI display)
+    networkManager.on(NetEventType.SEND_LIVES_UPDATE, (event) => {
+      this.peerLives = event.data.lives;
+    });
+
+    // Send Mode: opponent lost
+    networkManager.on(NetEventType.SEND_GAME_OVER, () => {
+      // Opponent lost, we win
+      this.onVictory();
+    });
+
+    // Split Lanes: receive gift gold
+    networkManager.on(NetEventType.GIFT_GOLD, (event) => {
+      this.receiveGiftGold(event.data.amount);
+    });
+
+    // Specialist ability sync
+    networkManager.on(NetEventType.ABILITY_USE, (event) => {
+      // Just visual notification — actual effects are local-only
+      this.showAbilityText(`P${event.player}: ${event.data.name}`, 0xaabbcc);
+    });
   }
 
   private updatePeerCursor(x: number, y: number): void {
@@ -354,6 +525,16 @@ export class GameScene extends Phaser.Scene {
       this.onEnemyDeath.bind(this),
       this.onEnemyReachBase.bind(this)
     );
+
+    // Split lanes: assign enemy to player based on spawn index (0=P1, 1=middle, 2=P2)
+    if (this.gameMode === 'splitlanes') {
+      const ownerPlayer = spawnIndex === 0 ? 1 : spawnIndex === 2 ? 2 : (this.spawnCounter % 2) + 1;
+      (enemy as any)._lanePlayer = ownerPlayer;
+      // Tint enemy slightly based on lane owner
+      const tint = ownerPlayer === 1 ? 0xaaccff : 0xaaffcc;
+      enemy['sprite']?.setTint(tint);
+    }
+
     this.enemies.push(enemy);
   }
 
@@ -385,19 +566,35 @@ export class GameScene extends Phaser.Scene {
   // ========================
 
   private fireTower(tower: Tower, target: Enemy): void {
-    const proj = new Projectile(this, tower, target, tower.currentDamage, this.vfx);
+    // Apply class damage multiplier and active rally
+    const classMult = (tower as any)._classDamageMult ?? 1;
+    const damage = tower.currentDamage * classMult * this.rallyMultiplier;
+    const proj = new Projectile(this, tower, target, damage, this.vfx);
     this.projectiles.push(proj);
   }
 
   private onEnemyDeath(enemy: Enemy): void {
     if (enemy.isDead) {
-      const reward = enemy.isMini ? Math.floor(enemy.def.reward * 0.3) : enemy.def.reward;
-      this.gold += reward;
+      const baseReward = enemy.isMini ? Math.floor(enemy.def.reward * 0.3) : enemy.def.reward;
+      // Scout class earns more gold
+      const goldMult = SPECIALISTS[this.myClass].goldMultiplier;
+      const reward = Math.floor(baseReward * goldMult);
+      this.addGold(reward);
       SFX.enemyDeath();
       SFX.goldEarned();
 
       this.showFloatingGold(enemy.x, enemy.y, reward);
       this.spawnSoulOrb(enemy.x, enemy.y);
+
+      // Send mode: track kill streak, send extras to opponent
+      if (this.gameMode === 'send' && this.isMultiplayer && !enemy.isMini) {
+        this.killStreak++;
+        this.killStreakTimer = 3.0; // 3 seconds to chain kills
+        if (this.killStreak >= 5) {
+          this.sendEnemyToOpponent(enemy.def.id);
+          this.killStreak = 0;
+        }
+      }
 
       if (enemy.def.special === 'split' && !enemy.isMini) {
         this.spawnSplitEnemy(enemy);
@@ -408,7 +605,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   private onEnemyReachBase(enemy: Enemy): void {
-    this.lives -= enemy.def.liveCost;
+    // In split lanes, lives belong to specific player based on enemy lane
+    const targetPlayer = (enemy as any)._lanePlayer;
+    if (this.gameMode === 'splitlanes' && targetPlayer) {
+      this.subtractLives(enemy.def.liveCost, targetPlayer);
+    } else {
+      this.subtractLives(enemy.def.liveCost);
+    }
     SFX.enemyReachBase();
 
     this.cameras.main.shake(200, 0.005);
@@ -421,12 +624,33 @@ export class GameScene extends Phaser.Scene {
 
     this.waveManager.enemyHandled();
 
-    if (this.lives <= 0) {
-      this.lives = 0;
-      if (this.isMultiplayer && networkManager.isHost) {
-        networkManager.send(NetEventType.GAME_OVER, { victory: false });
+    // Check defeat
+    if (this.gameMode === 'send' && this.isMultiplayer) {
+      // Send mode: own lives only matter for me
+      if (this.lives <= 0) {
+        this.lives = 0;
+        networkManager.send(NetEventType.SEND_GAME_OVER, { loser: networkManager.playerNumber });
+        this.onDefeat();
+      } else {
+        // Update peer with my lives
+        networkManager.send(NetEventType.SEND_LIVES_UPDATE, { lives: this.lives });
       }
-      this.onDefeat();
+    } else if (this.gameMode === 'splitlanes' && this.isMultiplayer) {
+      // Split lanes: lose if MY lives hit 0
+      if (this.myLives <= 0) {
+        if (networkManager.isHost) {
+          networkManager.send(NetEventType.GAME_OVER, { victory: false });
+        }
+        this.onDefeat();
+      }
+    } else {
+      if (this.lives <= 0) {
+        this.lives = 0;
+        if (this.isMultiplayer && networkManager.isHost) {
+          networkManager.send(NetEventType.GAME_OVER, { victory: false });
+        }
+        this.onDefeat();
+      }
     }
   }
 
@@ -573,11 +797,21 @@ export class GameScene extends Phaser.Scene {
     resumeAudio();
 
     if (pointer.rightButtonDown()) {
+      this.placingMeteor = false;
       this.cancelSelection();
       return;
     }
 
     if (!pointer.leftButtonDown()) return;
+
+    // Sorcerer Meteor placement (anywhere on map)
+    if (this.placingMeteor) {
+      const gridPos = this.gridManager.worldToGrid(pointer.x, pointer.y);
+      if (gridPos) {
+        this.dropMeteor(pointer.x, pointer.y);
+      }
+      return;
+    }
 
     const gridPos = this.gridManager.worldToGrid(pointer.x, pointer.y);
 
@@ -613,7 +847,8 @@ export class GameScene extends Phaser.Scene {
         }
         break;
       case 't':
-        this.activateTimeWarp();
+      case 'q':
+        this.activateAbility();
         break;
       case 'u':
         if (this.selectedTower) this.upgradeTower(this.selectedTower);
@@ -626,6 +861,9 @@ export class GameScene extends Phaser.Scene {
         break;
       case '.':
         this.setGameSpeed(Math.min(3, this.gameSpeed + 0.5));
+        break;
+      case 'g':
+        if (this.gameMode === 'splitlanes' && this.isMultiplayer) this.giftGold();
         break;
     }
   }
@@ -674,15 +912,15 @@ export class GameScene extends Phaser.Scene {
   private tryPlaceTower(gridPos: GridPos): void {
     if (!this.selectedTowerId) return;
 
-    const def = TOWERS[this.selectedTowerId];
-    if (this.gold < def.cost) { SFX.cantPlace(); return; }
+    const cost = this.getTowerCost(this.selectedTowerId);
+    if (this.myGold < cost) { SFX.cantPlace(); return; }
     if (!this.gridManager.canPlace(gridPos.x, gridPos.y)) { SFX.cantPlace(); return; }
 
     // Execute locally
-    this.executeTowerPlace(gridPos.x, gridPos.y, this.selectedTowerId, networkManager.playerNumber || 1);
+    this.executeTowerPlace(gridPos.x, gridPos.y, this.selectedTowerId, networkManager.playerNumber || 1, true);
 
-    // Send to peer
-    if (this.isMultiplayer) {
+    // Send to peer (skip in send mode — independent games)
+    if (this.isMultiplayer && this.gameMode !== 'send') {
       networkManager.send(NetEventType.TOWER_PLACE, {
         x: gridPos.x, y: gridPos.y,
         towerId: this.selectedTowerId,
@@ -691,23 +929,33 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Keep tower selected for rapid placement if enough gold
-    if (this.gold < def.cost) {
+    if (this.myGold < cost) {
       this.cancelSelection();
     }
 
     this.updateUI();
   }
 
-  private executeTowerPlace(x: number, y: number, towerId: string, player: number): void {
-    const def = TOWERS[towerId];
+  private executeTowerPlace(x: number, y: number, towerId: string, player: number, isLocal: boolean = false): void {
     if (!this.gridManager.canPlace(x, y)) return;
 
     this.gridManager.placeTower(x, y);
     const tower = new Tower(this, x, y, towerId);
     tower.setVFX(this.vfx);
     (tower as any)._placedBy = player;
+
+    // Apply specialist class modifier (use placer's class)
+    const placerClass = (player === networkManager.playerNumber || !this.isMultiplayer)
+      ? this.myClass : this.peerClass;
+    const placerSpec = SPECIALISTS[placerClass];
+    (tower as any)._classDamageMult = placerSpec.damageMultiplier;
+
     this.towers.push(tower);
-    this.gold -= def.cost;
+
+    // Deduct gold only on the local player's placement
+    if (isLocal) {
+      this.spendGold(this.getTowerCost(towerId));
+    }
 
     SFX.towerPlace();
     this.vfx.towerPlace(tower.x, tower.y);
@@ -798,6 +1046,175 @@ export class GameScene extends Phaser.Scene {
     if (this.timeWarpCooldown > 0 || this.timeWarpActive) return;
 
     this.executeTimeWarp(true);
+  }
+
+  // ========================
+  // SPECIALIST ABILITIES
+  // ========================
+
+  /** Activate the local player's specialist ability (replaces time warp in MP) */
+  private activateAbility(): void {
+    if (this.abilityCooldown > 0 || this.abilityActive) return;
+
+    const spec = SPECIALISTS[this.myClass];
+
+    switch (spec.abilityKey) {
+      case 'rally':
+        this.abilityActive = true;
+        this.abilityActiveTimer = 6000;
+        this.rallyMultiplier = 2;
+        this.abilityCooldown = spec.abilityCooldown;
+        SFX.timeWarp();
+        this.cameras.main.flash(200, 200, 100, 50);
+        this.showAbilityText('RALLY!', 0xcc6644);
+        break;
+
+      case 'reinforce':
+        this.abilityActive = true;
+        this.abilityActiveTimer = 8000;
+        this.reinforceBonus = TILE_SIZE * 1.5;
+        // Apply to all towers
+        for (const t of this.towers) {
+          (t as any)._rangeBonus = this.reinforceBonus;
+        }
+        this.abilityCooldown = spec.abilityCooldown;
+        SFX.towerUpgrade();
+        this.showAbilityText('REINFORCE!', 0x88aacc);
+        break;
+
+      case 'meteor':
+        this.placingMeteor = true;
+        this.showAbilityText('CLICK TO DROP METEOR', 0xaa44dd);
+        break;
+
+      case 'coinburst':
+        this.addGold(100);
+        this.abilityCooldown = spec.abilityCooldown;
+        SFX.goldEarned();
+        this.showFloatingGold(GAME_WIDTH / 2, GAME_HEIGHT / 2, 100);
+        this.showAbilityText('+100 GOLD!', 0x44cc88);
+        break;
+    }
+  }
+
+  /** Drop a meteor at the given location (sorcerer ability) */
+  private dropMeteor(x: number, y: number): void {
+    const spec = SPECIALISTS[this.myClass];
+    this.abilityCooldown = spec.abilityCooldown;
+    this.placingMeteor = false;
+
+    SFX.shoot_cannon();
+
+    // Big visual: incoming meteor from above
+    const meteor = this.add.image(x, y - 600, 'particle_flare')
+      .setScale(2).setTint(0xff6622).setBlendMode(Phaser.BlendModes.ADD).setDepth(100);
+
+    this.tweens.add({
+      targets: meteor,
+      y: y, scaleX: 4, scaleY: 4,
+      duration: 350,
+      onComplete: () => {
+        meteor.destroy();
+
+        // Massive AoE damage
+        const radius = TILE_SIZE * 2.2;
+        for (const enemy of this.enemies) {
+          if (!enemy.active || enemy.isDead) continue;
+          const dist = Phaser.Math.Distance.Between(x, y, enemy.x, enemy.y);
+          if (dist <= radius) {
+            const falloff = 1 - (dist / radius) * 0.5;
+            enemy.takeDamage(300 * falloff, true);
+          }
+        }
+
+        // Visual explosion
+        this.vfx.splashImpact(x, y, radius, 0xff6622);
+        this.cameras.main.shake(400, 0.015);
+        this.cameras.main.flash(150, 255, 100, 0);
+      },
+    });
+  }
+
+  private showAbilityText(text: string, color: number): void {
+    const txt = this.add.text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 80, text, {
+      fontSize: '32px', fontFamily: 'monospace',
+      color: Phaser.Display.Color.IntegerToColor(color).rgba,
+      fontStyle: 'bold', stroke: '#000000', strokeThickness: 4,
+    }).setOrigin(0.5).setDepth(100);
+
+    this.tweens.add({
+      targets: txt, alpha: 0, scaleX: 1.5, scaleY: 1.5,
+      duration: 1500, onComplete: () => txt.destroy(),
+    });
+  }
+
+  // ========================
+  // SEND MODE
+  // ========================
+
+  private sendEnemyToOpponent(enemyType: string): void {
+    networkManager.send(NetEventType.SEND_ENEMY, { type: enemyType });
+
+    // Visual feedback
+    const txt = this.add.text(GAME_WIDTH / 2, 80, `+ SENT ${enemyType.toUpperCase()} TO OPPONENT!`, {
+      fontSize: '18px', fontFamily: 'monospace', color: '#ff6644',
+      fontStyle: 'bold', stroke: '#000000', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(100);
+
+    this.tweens.add({
+      targets: txt, alpha: 0, y: 50,
+      duration: 1500, onComplete: () => txt.destroy(),
+    });
+  }
+
+  private receiveSentEnemy(enemyType: string): void {
+    this.incomingEnemies.push({ type: enemyType, hpScale: 1.5 });
+
+    const txt = this.add.text(GAME_WIDTH / 2, 80, `! INCOMING ${enemyType.toUpperCase()} FROM OPPONENT !`, {
+      fontSize: '16px', fontFamily: 'monospace', color: '#ff4444',
+      fontStyle: 'bold', stroke: '#000000', strokeThickness: 3,
+    }).setOrigin(0.5).setDepth(100);
+
+    this.tweens.add({
+      targets: txt, alpha: 0, y: 50,
+      duration: 1500, onComplete: () => txt.destroy(),
+    });
+
+    // Spawn the enemy immediately as bonus
+    this.time.delayedCall(500, () => {
+      const sent = this.incomingEnemies.shift();
+      if (sent) this.spawnEnemy(sent.type, sent.hpScale, 1);
+    });
+  }
+
+  // ========================
+  // SPLIT LANES
+  // ========================
+
+  private giftGold(): void {
+    const giftAmount = 50;
+    if (this.myGold < giftAmount) {
+      SFX.cantPlace();
+      return;
+    }
+    this.spendGold(giftAmount);
+    networkManager.send(NetEventType.GIFT_GOLD, { amount: giftAmount });
+    SFX.goldEarned();
+
+    const txt = this.add.text(GAME_WIDTH / 2, 80, `Gifted ${giftAmount}g to partner`, {
+      fontSize: '16px', fontFamily: 'monospace', color: '#ffd700',
+      fontStyle: 'bold', stroke: '#000000', strokeThickness: 2,
+    }).setOrigin(0.5).setDepth(100);
+    this.tweens.add({
+      targets: txt, alpha: 0, y: 50,
+      duration: 1500, onComplete: () => txt.destroy(),
+    });
+  }
+
+  private receiveGiftGold(amount: number): void {
+    this.addGold(amount);
+    SFX.goldEarned();
+    this.showFloatingGold(GAME_WIDTH / 2, 100, amount);
   }
 
   private executeTimeWarp(sendNetwork: boolean): void {
@@ -1055,20 +1472,47 @@ export class GameScene extends Phaser.Scene {
     this.sellBtn.on('pointerout', () => sellBg.setAlpha(1));
   }
 
+  private createGiftButton(): void {
+    if (this.gameMode !== 'splitlanes' || !this.isMultiplayer) return;
+
+    const panelX = GRID_OFFSET_X + GRID_COLS * TILE_SIZE + 12;
+    const by = GAME_HEIGHT - 155;
+
+    this.giftBtn = this.add.container(panelX + 10, by).setDepth(82);
+
+    const bg = this.add.graphics();
+    bg.fillStyle(0x443322, 0.9);
+    bg.fillRoundedRect(0, 0, 130, 32, 4);
+    bg.lineStyle(1, 0xddaa44, 0.7);
+    bg.strokeRoundedRect(0, 0, 130, 32, 4);
+
+    const label = this.add.text(65, 16, 'GIFT 50G [G]', {
+      fontSize: '11px', fontFamily: 'monospace', color: '#ffd700', fontStyle: 'bold',
+    }).setOrigin(0.5);
+
+    this.giftBtn.add([bg, label]);
+    this.giftBtn.setSize(130, 32);
+    this.giftBtn.setInteractive(new Phaser.Geom.Rectangle(0, 0, 130, 32), Phaser.Geom.Rectangle.Contains);
+    this.giftBtn.on('pointerup', () => this.giftGold());
+  }
+
   private createTimeWarpButton(): void {
     const panelX = GRID_OFFSET_X + GRID_COLS * TILE_SIZE + 12;
     const by = GAME_HEIGHT - 110;
 
     this.timeWarpBtn = this.add.container(panelX + 10, by).setDepth(82);
 
+    const spec = SPECIALISTS[this.myClass];
     const bg = this.add.graphics();
-    bg.fillStyle(0x331155, 0.9);
+    bg.fillStyle(0x222244, 0.9);
     bg.fillRoundedRect(0, 0, 130, 36, 4);
-    bg.lineStyle(1, 0xaa44dd, 0.6);
+    bg.lineStyle(1, spec.color, 0.7);
     bg.strokeRoundedRect(0, 0, 130, 36, 4);
 
-    const label = this.add.text(65, 10, 'TIME WARP [T]', {
-      fontSize: '11px', fontFamily: 'monospace', color: '#cc88ff', fontStyle: 'bold',
+    const label = this.add.text(65, 10, `${spec.abilityName.toUpperCase()} [Q]`, {
+      fontSize: '11px', fontFamily: 'monospace',
+      color: Phaser.Display.Color.IntegerToColor(spec.color).rgba,
+      fontStyle: 'bold',
     }).setOrigin(0.5);
 
     this.timeWarpCooldownText = this.add.text(65, 25, 'Ready', {
@@ -1082,7 +1526,7 @@ export class GameScene extends Phaser.Scene {
       Phaser.Geom.Rectangle.Contains
     );
 
-    this.timeWarpBtn.on('pointerdown', () => this.activateTimeWarp());
+    this.timeWarpBtn.on('pointerup', () => this.activateAbility());
   }
 
   private createSpeedControls(): void {
@@ -1153,8 +1597,8 @@ export class GameScene extends Phaser.Scene {
   // ========================
 
   private updateUI(): void {
-    this.goldText.setText(`${this.gold}`);
-    this.livesText.setText(`${this.lives}`);
+    this.goldText.setText(`${this.myGold}`);
+    this.livesText.setText(`${this.myLives}`);
     this.waveText.setText(`${this.waveManager.currentWave}/${this.waveManager.totalWaves}`);
 
     if (this.waveManager.waveBreakTimer > 0) {
@@ -1170,10 +1614,20 @@ export class GameScene extends Phaser.Scene {
 
     this.towerButtons.forEach(btn => {
       const towerId = (btn as any)._towerId;
-      const def = TOWERS[towerId];
-      const affordable = this.gold >= def.cost;
+      const cost = this.getTowerCost(towerId);
+      const affordable = this.myGold >= cost;
       btn.setAlpha(affordable ? 1 : 0.4);
     });
+
+    // Mode-specific UI updates
+    if (this.gameMode === 'send' && this.peerLivesText) {
+      this.peerLivesText.setText(`OPP: ${this.peerLives}`);
+    }
+    if (this.gameMode === 'splitlanes' && this.peerGoldText) {
+      const peerGold = networkManager.playerNumber === 2 ? this.goldP1 : this.goldP2;
+      const peerLives = networkManager.playerNumber === 2 ? this.livesP1 : this.livesP2;
+      this.peerGoldText.setText(`P${networkManager.playerNumber === 2 ? 1 : 2}: ${peerGold}g  ${peerLives}♥`);
+    }
   }
 
   private updateTowerButtons(): void {
@@ -1193,8 +1647,21 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateTimeWarpUI(): void {
-    if (this.timeWarpCooldown > 0) {
-      const secs = Math.ceil(this.timeWarpCooldown / 1000);
+    // Legacy time warp — handled by updateAbilityUI now
+  }
+
+  private updateAbilityUI(): void {
+    if (this.placingMeteor) {
+      this.timeWarpCooldownText.setText('SELECT TARGET');
+      this.timeWarpBtn.setAlpha(1);
+      return;
+    }
+    if (this.abilityActive) {
+      const secs = Math.ceil(this.abilityActiveTimer / 1000);
+      this.timeWarpCooldownText.setText(`Active: ${secs}s`);
+      this.timeWarpBtn.setAlpha(1);
+    } else if (this.abilityCooldown > 0) {
+      const secs = Math.ceil(this.abilityCooldown / 1000);
       this.timeWarpCooldownText.setText(`${secs}s`);
       this.timeWarpBtn.setAlpha(0.5);
     } else {

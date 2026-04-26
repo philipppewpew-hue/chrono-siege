@@ -23,6 +23,118 @@ export const STARTING_LIVES = 20;
 export const TOTAL_WAVES = 25;
 export const WAVE_BREAK_TIME = 8000; // ms between waves
 
+// ============================================================
+// MULTIPLAYER MODES
+// ============================================================
+export type GameMode = 'solo' | 'coop' | 'send' | 'splitlanes';
+
+export interface GameModeDef {
+  id: GameMode;
+  name: string;
+  description: string;
+}
+
+export const GAME_MODES: Record<GameMode, GameModeDef> = {
+  solo: {
+    id: 'solo',
+    name: 'Solo',
+    description: 'Play alone',
+  },
+  coop: {
+    id: 'coop',
+    name: 'Co-op',
+    description: 'Shared gold and lives. Build together.',
+  },
+  send: {
+    id: 'send',
+    name: 'Send Mode',
+    description: 'Compete on separate maps. Kill streaks send extra enemies to opponent.',
+  },
+  splitlanes: {
+    id: 'splitlanes',
+    name: 'Split Lanes',
+    description: 'Each player defends their lane. Separate gold. Gift to help.',
+  },
+};
+
+// ============================================================
+// SPECIALIST CLASSES
+// ============================================================
+export type SpecialistClass = 'architect' | 'commander' | 'sorcerer' | 'scout';
+
+export interface SpecialistDef {
+  id: SpecialistClass;
+  name: string;
+  description: string;
+  color: number;
+  // Passive modifiers
+  towerCostMultiplier: number;
+  damageMultiplier: number;
+  goldMultiplier: number;
+  // Ability (replaces Time Warp)
+  abilityName: string;
+  abilityKey: string;
+  abilityDescription: string;
+  abilityCooldown: number; // ms
+}
+
+export const SPECIALISTS: Record<SpecialistClass, SpecialistDef> = {
+  architect: {
+    id: 'architect',
+    name: 'Architect',
+    description: 'Master builder — towers cost 20% less',
+    color: 0x88aacc,
+    towerCostMultiplier: 0.8,
+    damageMultiplier: 1.0,
+    goldMultiplier: 1.0,
+    abilityName: 'Reinforce',
+    abilityKey: 'reinforce',
+    abilityDescription: 'All towers gain +25 max range for 8s',
+    abilityCooldown: 25000,
+  },
+  commander: {
+    id: 'commander',
+    name: 'Commander',
+    description: 'Battle leader — towers deal 20% more damage',
+    color: 0xcc6644,
+    towerCostMultiplier: 1.0,
+    damageMultiplier: 1.2,
+    goldMultiplier: 1.0,
+    abilityName: 'Rally',
+    abilityKey: 'rally',
+    abilityDescription: 'All towers fire 2x speed for 6s',
+    abilityCooldown: 30000,
+  },
+  sorcerer: {
+    id: 'sorcerer',
+    name: 'Sorcerer',
+    description: 'Master of arcane forces',
+    color: 0xaa44dd,
+    towerCostMultiplier: 1.0,
+    damageMultiplier: 1.0,
+    goldMultiplier: 1.0,
+    abilityName: 'Meteor',
+    abilityKey: 'meteor',
+    abilityDescription: 'Click anywhere to drop a meteor (300 dmg AoE)',
+    abilityCooldown: 25000,
+  },
+  scout: {
+    id: 'scout',
+    name: 'Scout',
+    description: 'Treasure hunter — earn 50% more gold',
+    color: 0x44cc88,
+    towerCostMultiplier: 1.0,
+    damageMultiplier: 1.0,
+    goldMultiplier: 1.5,
+    abilityName: 'Coin Burst',
+    abilityKey: 'coinburst',
+    abilityDescription: 'Instantly earn 100 gold',
+    abilityCooldown: 30000,
+  },
+};
+
+export const SPECIALIST_ORDER: SpecialistClass[] = ['architect', 'commander', 'sorcerer', 'scout'];
+
 // Colors
 export const COLORS = {
   bg: 0x0a0a1a,

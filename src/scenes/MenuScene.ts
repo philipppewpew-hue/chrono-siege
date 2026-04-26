@@ -1,9 +1,13 @@
 import * as Phaser from 'phaser';
-import { GAME_WIDTH, GAME_HEIGHT } from '../config';
+import {
+  GAME_WIDTH, GAME_HEIGHT,
+  GameMode, GAME_MODES,
+  SpecialistClass, SPECIALISTS, SPECIALIST_ORDER,
+} from '../config';
 import { SFX, resumeAudio } from '../utils/SoundGenerator';
 import { networkManager, NetEventType } from '../managers/NetworkManager';
 
-type MenuState = 'main' | 'hosting' | 'joining' | 'waiting' | 'connected';
+type MenuState = 'main' | 'mode_select' | 'class_select_solo' | 'hosting' | 'joining' | 'class_select_mp' | 'connected';
 
 export class MenuScene extends Phaser.Scene {
   private state: MenuState = 'main';
@@ -13,6 +17,8 @@ export class MenuScene extends Phaser.Scene {
   private codeInput: string = '';
   private inputCursorVisible: boolean = true;
   private inputCursorTimer: number = 0;
+  private selectedMode: GameMode = 'coop';
+  private myClass: SpecialistClass = 'commander';
 
   constructor() {
     super({ key: 'MenuScene' });
@@ -22,27 +28,20 @@ export class MenuScene extends Phaser.Scene {
     this.cameras.main.setBackgroundColor(0x0a0a1a);
     this.state = 'main';
     this.codeInput = '';
+    this.selectedMode = 'coop';
+    this.myClass = 'commander';
 
-    // Cleanup any prior connection
     networkManager.disconnect();
 
-    // Background particles
     this.createBackgroundParticles();
 
-    // Title
-    const title = this.add.text(GAME_WIDTH / 2, 120, 'CHRONO SIEGE', {
-      fontSize: '64px',
-      fontFamily: 'monospace',
-      color: '#ccddff',
-      fontStyle: 'bold',
-      stroke: '#2244aa',
-      strokeThickness: 4,
+    const title = this.add.text(GAME_WIDTH / 2, 90, 'CHRONO SIEGE', {
+      fontSize: '56px', fontFamily: 'monospace', color: '#ccddff',
+      fontStyle: 'bold', stroke: '#2244aa', strokeThickness: 4,
     }).setOrigin(0.5);
 
-    this.add.text(GAME_WIDTH / 2, 190, 'A Time-Bending Tower Defense', {
-      fontSize: '18px',
-      fontFamily: 'monospace',
-      color: '#8899bb',
+    this.add.text(GAME_WIDTH / 2, 150, 'A Time-Bending Tower Defense', {
+      fontSize: '16px', fontFamily: 'monospace', color: '#8899bb',
     }).setOrigin(0.5);
 
     this.tweens.add({
@@ -52,31 +51,22 @@ export class MenuScene extends Phaser.Scene {
       ease: 'Sine.easeInOut',
     });
 
-    // Dynamic UI container (changes based on state)
     this.uiContainer = this.add.container(0, 0);
 
-    // Status text (for connection messages)
-    this.statusText = this.add.text(GAME_WIDTH / 2, 620, '', {
+    this.statusText = this.add.text(GAME_WIDTH / 2, 660, '', {
       fontSize: '13px', fontFamily: 'monospace', color: '#888888',
     }).setOrigin(0.5).setDepth(10);
 
-    // Code display text
-    this.codeText = this.add.text(GAME_WIDTH / 2, 400, '', {
+    this.codeText = this.add.text(GAME_WIDTH / 2, 360, '', {
       fontSize: '40px', fontFamily: 'monospace', color: '#ffd700',
-      fontStyle: 'bold', letterSpacing: 12,
+      fontStyle: 'bold',
     }).setOrigin(0.5).setDepth(10);
 
     this.showMainMenu();
 
-    // Keyboard input for join code
     this.input.keyboard!.on('keydown', this.onKeyDown, this);
 
-    // Controls hint
-    this.add.text(GAME_WIDTH / 2, GAME_HEIGHT - 30, 'Click to place towers | Right-click to cancel | 1-6 to select towers', {
-      fontSize: '12px', fontFamily: 'monospace', color: '#445566',
-    }).setOrigin(0.5);
-
-    this.add.text(GAME_WIDTH - 16, GAME_HEIGHT - 16, 'v1.1', {
+    this.add.text(GAME_WIDTH - 16, GAME_HEIGHT - 16, 'v1.2', {
       fontSize: '11px', fontFamily: 'monospace', color: '#334455',
     }).setOrigin(1, 1);
 
@@ -84,7 +74,6 @@ export class MenuScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
-    // Blink cursor for code input
     if (this.state === 'joining') {
       this.inputCursorTimer += delta;
       if (this.inputCursorTimer > 500) {
@@ -96,7 +85,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   // ========================
-  // MENU STATES
+  // SCREENS
   // ========================
 
   private showMainMenu(): void {
@@ -105,61 +94,357 @@ export class MenuScene extends Phaser.Scene {
     this.statusText.setText('');
     this.codeText.setText('');
 
-    // Solo play
-    this.createButton(GAME_WIDTH / 2, 300, 'SOLO PLAY', () => {
+    this.createButton(GAME_WIDTH / 2, 260, 'SOLO PLAY', () => {
       resumeAudio();
       SFX.uiClick();
       networkManager.isMultiplayer = false;
-      this.startGame();
+      networkManager.gameMode = 'solo';
+      this.showClassSelectSolo();
     });
 
-    // Host multiplayer
-    this.createButton(GAME_WIDTH / 2, 370, 'HOST GAME', () => {
+    this.createButton(GAME_WIDTH / 2, 330, 'HOST GAME', () => {
       resumeAudio();
       SFX.uiClick();
-      this.startHosting();
+      this.showModeSelect();
     });
 
-    // Join multiplayer
-    this.createButton(GAME_WIDTH / 2, 440, 'JOIN GAME', () => {
+    this.createButton(GAME_WIDTH / 2, 400, 'JOIN GAME', () => {
       resumeAudio();
       SFX.uiClick();
       this.showJoinScreen();
     });
 
-    // Feature list
     const features = [
-      'Build mazes to control enemy paths',
-      '6 tower types  •  25 waves  •  Co-op multiplayer',
+      'Build mazes  •  6 tower types  •  4 specialist classes',
+      'Solo  •  Co-op  •  Send Mode  •  Split Lanes',
     ];
     features.forEach((text, i) => {
       this.uiContainer.add(
-        this.add.text(GAME_WIDTH / 2, 520 + i * 24, text, {
+        this.add.text(GAME_WIDTH / 2, 510 + i * 24, text, {
           fontSize: '13px', fontFamily: 'monospace', color: '#556677',
         }).setOrigin(0.5)
       );
     });
   }
 
+  // === Mode select (host only) ===
+  private showModeSelect(): void {
+    this.clearUI();
+    this.state = 'mode_select';
+    this.statusText.setText('Choose a multiplayer mode:');
+
+    const modes: GameMode[] = ['coop', 'send', 'splitlanes'];
+    const startY = 240;
+
+    modes.forEach((mode, i) => {
+      const def = GAME_MODES[mode];
+      const y = startY + i * 100;
+      const card = this.add.container(GAME_WIDTH / 2, y).setDepth(5);
+
+      const bg = this.add.graphics();
+      bg.fillStyle(0x1a1a2e, 0.9);
+      bg.fillRoundedRect(-260, -40, 520, 80, 6);
+      bg.lineStyle(2, 0x4488aa, 0.7);
+      bg.strokeRoundedRect(-260, -40, 520, 80, 6);
+
+      const name = this.add.text(0, -16, def.name.toUpperCase(), {
+        fontSize: '20px', fontFamily: 'monospace', color: '#ccddff', fontStyle: 'bold',
+      }).setOrigin(0.5);
+
+      const desc = this.add.text(0, 14, def.description, {
+        fontSize: '13px', fontFamily: 'monospace', color: '#8899aa',
+      }).setOrigin(0.5);
+
+      card.add([bg, name, desc]);
+      card.setSize(520, 80);
+      card.setInteractive(new Phaser.Geom.Rectangle(-260, -40, 520, 80), Phaser.Geom.Rectangle.Contains);
+
+      card.on('pointerover', () => {
+        bg.clear();
+        bg.fillStyle(0x2a2a4e, 0.95);
+        bg.fillRoundedRect(-260, -40, 520, 80, 6);
+        bg.lineStyle(2, 0x66aacc, 1);
+        bg.strokeRoundedRect(-260, -40, 520, 80, 6);
+      });
+      card.on('pointerout', () => {
+        bg.clear();
+        bg.fillStyle(0x1a1a2e, 0.9);
+        bg.fillRoundedRect(-260, -40, 520, 80, 6);
+        bg.lineStyle(2, 0x4488aa, 0.7);
+        bg.strokeRoundedRect(-260, -40, 520, 80, 6);
+      });
+      card.on('pointerup', () => {
+        SFX.uiClick();
+        this.selectedMode = mode;
+        networkManager.gameMode = mode;
+        this.startHosting();
+      });
+
+      this.uiContainer.add(card);
+
+      card.setAlpha(0);
+      card.y += 15;
+      this.tweens.add({
+        targets: card, alpha: 1, y: y,
+        duration: 350, delay: 80 + i * 70, ease: 'Back.easeOut',
+      });
+    });
+
+    this.createButton(GAME_WIDTH / 2, 580, 'BACK', () => {
+      SFX.uiClick();
+      this.showMainMenu();
+    });
+  }
+
+  // === Class select for solo play ===
+  private showClassSelectSolo(): void {
+    this.clearUI();
+    this.state = 'class_select_solo';
+    this.statusText.setText('Choose your specialist:');
+
+    this.renderClassPicker(280, (cls) => {
+      this.myClass = cls;
+      networkManager.myClass = cls;
+      SFX.uiClick();
+      this.startGame();
+    });
+
+    this.createButton(GAME_WIDTH / 2, 580, 'BACK', () => {
+      SFX.uiClick();
+      this.showMainMenu();
+    });
+  }
+
+  // === Class select for multiplayer ===
+  private showClassSelectMP(): void {
+    this.clearUI();
+    this.state = 'class_select_mp';
+
+    const role = networkManager.isHost ? 'HOST (P1)' : 'GUEST (P2)';
+    const color = networkManager.isHost ? '#44aaff' : '#44ff88';
+    const modeName = GAME_MODES[networkManager.gameMode].name;
+
+    this.uiContainer.add(
+      this.add.text(GAME_WIDTH / 2, 200, `${modeName.toUpperCase()}  —  Room ${networkManager.roomCode}`, {
+        fontSize: '16px', fontFamily: 'monospace', color: '#aabbcc',
+      }).setOrigin(0.5)
+    );
+    this.uiContainer.add(
+      this.add.text(GAME_WIDTH / 2, 224, `You are ${role}`, {
+        fontSize: '14px', fontFamily: 'monospace', color: color,
+      }).setOrigin(0.5)
+    );
+
+    this.statusText.setText('Choose your specialist:');
+
+    this.renderClassPicker(290, (cls) => {
+      this.myClass = cls;
+      networkManager.myClass = cls;
+      SFX.uiClick();
+      networkManager.send(NetEventType.CLASS_CHANGE, { class: cls });
+      this.showLobbyReady();
+    });
+
+    this.createButton(GAME_WIDTH / 2, 600, 'LEAVE', () => {
+      SFX.uiClick();
+      networkManager.disconnect();
+      this.showMainMenu();
+    });
+  }
+
+  private showLobbyReady(): void {
+    this.clearUI();
+    this.state = 'connected';
+
+    const myDef = SPECIALISTS[networkManager.myClass];
+    const peerDef = SPECIALISTS[networkManager.peerClass];
+
+    const modeName = GAME_MODES[networkManager.gameMode].name;
+    this.uiContainer.add(
+      this.add.text(GAME_WIDTH / 2, 200, `${modeName.toUpperCase()}  —  Room ${networkManager.roomCode}`, {
+        fontSize: '16px', fontFamily: 'monospace', color: '#aabbcc',
+      }).setOrigin(0.5)
+    );
+
+    // P1 card
+    const p1IsMe = networkManager.isHost;
+    const p1Class = p1IsMe ? myDef : peerDef;
+    this.renderPlayerCard(GAME_WIDTH / 2 - 180, 320, 1, p1Class, p1IsMe);
+
+    // VS text
+    this.uiContainer.add(
+      this.add.text(GAME_WIDTH / 2, 320, networkManager.gameMode === 'send' ? 'VS' : '+', {
+        fontSize: '36px', fontFamily: 'monospace', color: '#ffd700', fontStyle: 'bold',
+      }).setOrigin(0.5)
+    );
+
+    // P2 card
+    const p2IsMe = !networkManager.isHost;
+    const p2Class = p2IsMe ? myDef : peerDef;
+    this.renderPlayerCard(GAME_WIDTH / 2 + 180, 320, 2, p2Class, p2IsMe);
+
+    if (networkManager.isHost) {
+      this.createButton(GAME_WIDTH / 2, 510, 'START GAME', () => {
+        SFX.uiClick();
+        networkManager.send(NetEventType.GAME_START);
+        this.startGame();
+      });
+    } else {
+      const waitText = this.add.text(GAME_WIDTH / 2, 510, 'Waiting for host to start...', {
+        fontSize: '14px', fontFamily: 'monospace', color: '#667799',
+      }).setOrigin(0.5);
+      this.uiContainer.add(waitText);
+
+      let dots = 0;
+      this.time.addEvent({
+        delay: 500, loop: true,
+        callback: () => {
+          if (this.state !== 'connected') return;
+          dots = (dots + 1) % 4;
+          waitText.setText('Waiting for host to start' + '.'.repeat(dots));
+        },
+      });
+
+      networkManager.on(NetEventType.GAME_START, () => {
+        this.startGame();
+      });
+    }
+
+    // Change class button
+    this.createButton(GAME_WIDTH / 2, 580, 'CHANGE CLASS', () => {
+      SFX.uiClick();
+      this.showClassSelectMP();
+    });
+
+    networkManager.onDisconnected = () => {
+      this.statusText.setText('Other player disconnected').setColor('#ff4444');
+      this.time.delayedCall(2000, () => this.showMainMenu());
+    };
+  }
+
+  private renderPlayerCard(x: number, y: number, playerNum: number, cls: any, isMe: boolean): void {
+    const card = this.add.container(x, y).setDepth(5);
+    const w = 220, h = 160;
+
+    const bg = this.add.graphics();
+    bg.fillStyle(0x1a1a2e, 0.9);
+    bg.fillRoundedRect(-w / 2, -h / 2, w, h, 8);
+    bg.lineStyle(2, isMe ? cls.color : 0x445566, 0.9);
+    bg.strokeRoundedRect(-w / 2, -h / 2, w, h, 8);
+
+    const label = this.add.text(0, -h / 2 + 16, `P${playerNum}${isMe ? ' (YOU)' : ''}`, {
+      fontSize: '14px', fontFamily: 'monospace',
+      color: isMe ? '#ffd700' : '#888899',
+      fontStyle: 'bold',
+    }).setOrigin(0.5);
+
+    const className = this.add.text(0, -20, cls.name.toUpperCase(), {
+      fontSize: '20px', fontFamily: 'monospace',
+      color: Phaser.Display.Color.IntegerToColor(cls.color).rgba,
+      fontStyle: 'bold',
+    }).setOrigin(0.5);
+
+    const desc = this.add.text(0, 16, cls.description, {
+      fontSize: '11px', fontFamily: 'monospace', color: '#aabbcc',
+      wordWrap: { width: w - 24 }, align: 'center',
+    }).setOrigin(0.5);
+
+    const ability = this.add.text(0, 50, `Ability: ${cls.abilityName}`, {
+      fontSize: '11px', fontFamily: 'monospace', color: '#ffd700',
+    }).setOrigin(0.5);
+
+    card.add([bg, label, className, desc, ability]);
+    this.uiContainer.add(card);
+  }
+
+  private renderClassPicker(startY: number, onPick: (cls: SpecialistClass) => void): void {
+    const cardWidth = 240, cardHeight = 130;
+    const spacing = 16;
+    const totalWidth = cardWidth * 2 + spacing;
+    const startX = GAME_WIDTH / 2 - totalWidth / 2 + cardWidth / 2;
+
+    SPECIALIST_ORDER.forEach((cls, i) => {
+      const def = SPECIALISTS[cls];
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const x = startX + col * (cardWidth + spacing);
+      const y = startY + row * (cardHeight + spacing);
+
+      const card = this.add.container(x, y).setDepth(5);
+
+      const bg = this.add.graphics();
+      const drawBg = (hover: boolean) => {
+        bg.clear();
+        bg.fillStyle(hover ? 0x2a2a4e : 0x1a1a2e, 0.9);
+        bg.fillRoundedRect(-cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight, 6);
+        bg.lineStyle(2, def.color, hover ? 1 : 0.7);
+        bg.strokeRoundedRect(-cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight, 6);
+      };
+      drawBg(false);
+
+      const name = this.add.text(0, -45, def.name.toUpperCase(), {
+        fontSize: '20px', fontFamily: 'monospace',
+        color: Phaser.Display.Color.IntegerToColor(def.color).rgba,
+        fontStyle: 'bold',
+      }).setOrigin(0.5);
+
+      const desc = this.add.text(0, -16, def.description, {
+        fontSize: '11px', fontFamily: 'monospace', color: '#aabbcc',
+        wordWrap: { width: cardWidth - 20 }, align: 'center',
+      }).setOrigin(0.5);
+
+      const abilityLine = this.add.text(0, 20, `${def.abilityName}`, {
+        fontSize: '12px', fontFamily: 'monospace', color: '#ffd700', fontStyle: 'bold',
+      }).setOrigin(0.5);
+
+      const abilityDesc = this.add.text(0, 42, def.abilityDescription, {
+        fontSize: '10px', fontFamily: 'monospace', color: '#88aabb',
+        wordWrap: { width: cardWidth - 20 }, align: 'center',
+      }).setOrigin(0.5);
+
+      card.add([bg, name, desc, abilityLine, abilityDesc]);
+      card.setSize(cardWidth, cardHeight);
+      card.setInteractive(
+        new Phaser.Geom.Rectangle(-cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight),
+        Phaser.Geom.Rectangle.Contains
+      );
+
+      card.on('pointerover', () => drawBg(true));
+      card.on('pointerout', () => drawBg(false));
+      card.on('pointerup', () => onPick(cls));
+
+      this.uiContainer.add(card);
+
+      card.setAlpha(0);
+      this.tweens.add({
+        targets: card, alpha: 1,
+        duration: 300, delay: 80 + i * 60, ease: 'Quad.easeOut',
+      });
+    });
+  }
+
+  // === Hosting (creates room) ===
   private async startHosting(): Promise<void> {
     this.clearUI();
     this.state = 'hosting';
-    this.statusText.setText('Creating room...');
+    this.statusText.setText('Creating room...').setColor('#888888');
 
     try {
       const code = await networkManager.hostGame();
-      this.state = 'waiting';
       this.codeText.setText(code);
 
       this.statusText.setText('Share this code with your friend:');
 
-      // Waiting for guest label
+      const modeText = this.add.text(GAME_WIDTH / 2, 280, `Mode: ${GAME_MODES[this.selectedMode].name}`, {
+        fontSize: '15px', fontFamily: 'monospace', color: '#88aabb',
+      }).setOrigin(0.5);
+      this.uiContainer.add(modeText);
+
       const waitText = this.add.text(GAME_WIDTH / 2, 460, 'Waiting for player to join...', {
         fontSize: '14px', fontFamily: 'monospace', color: '#667799',
       }).setOrigin(0.5);
       this.uiContainer.add(waitText);
 
-      // Pulsing dots animation
       let dots = 0;
       const dotTimer = this.time.addEvent({
         delay: 500, loop: true,
@@ -169,7 +454,6 @@ export class MenuScene extends Phaser.Scene {
         },
       });
 
-      // Back button
       this.createButton(GAME_WIDTH / 2, 540, 'CANCEL', () => {
         SFX.uiClick();
         dotTimer.destroy();
@@ -177,11 +461,23 @@ export class MenuScene extends Phaser.Scene {
         this.showMainMenu();
       });
 
-      // Listen for connection
+      // Listen for class change broadcasts
+      networkManager.on(NetEventType.CLASS_CHANGE, (event) => {
+        networkManager.peerClass = event.data.class;
+        if (this.state === 'connected') {
+          // refresh lobby display
+          this.showLobbyReady();
+        }
+      });
+
       networkManager.onConnected = () => {
         dotTimer.destroy();
         SFX.waveStart();
-        this.showConnectedScreen();
+        // Send mode info to guest immediately
+        networkManager.send(NetEventType.MODE_CHANGE, { mode: this.selectedMode });
+        // Send our class
+        networkManager.send(NetEventType.CLASS_CHANGE, { class: networkManager.myClass });
+        this.showClassSelectMP();
       };
 
       networkManager.onError = (err) => {
@@ -202,14 +498,12 @@ export class MenuScene extends Phaser.Scene {
     this.statusText.setText('Enter the 4-letter room code:');
     this.updateCodeDisplay();
 
-    // Input hint
     this.uiContainer.add(
       this.add.text(GAME_WIDTH / 2, 460, 'Type the code and press ENTER', {
         fontSize: '13px', fontFamily: 'monospace', color: '#667799',
       }).setOrigin(0.5)
     );
 
-    // Back button
     this.createButton(GAME_WIDTH / 2, 540, 'CANCEL', () => {
       SFX.uiClick();
       this.showMainMenu();
@@ -222,79 +516,33 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
 
-    this.state = 'hosting'; // prevent further input
+    this.state = 'hosting';
     this.statusText.setText(`Connecting to ${this.codeInput}...`).setColor('#888888');
 
     try {
+      // Listen for mode and class messages from host
+      networkManager.on(NetEventType.MODE_CHANGE, (event) => {
+        networkManager.gameMode = event.data.mode;
+      });
+      networkManager.on(NetEventType.CLASS_CHANGE, (event) => {
+        networkManager.peerClass = event.data.class;
+        if (this.state === 'connected') {
+          this.showLobbyReady();
+        }
+      });
+
       await networkManager.joinGame(this.codeInput);
       SFX.waveStart();
-      this.showConnectedScreen();
+      // After connection, wait briefly for mode info to arrive
+      this.time.delayedCall(300, () => {
+        // Send my class
+        networkManager.send(NetEventType.CLASS_CHANGE, { class: networkManager.myClass });
+        this.showClassSelectMP();
+      });
     } catch (err) {
       this.statusText.setText(`${err}`).setColor('#ff4444');
       this.time.delayedCall(2000, () => this.showJoinScreen());
     }
-  }
-
-  private showConnectedScreen(): void {
-    this.clearUI();
-    this.state = 'connected';
-
-    const role = networkManager.isHost ? 'HOST' : 'GUEST';
-    const color = networkManager.isHost ? '#44aaff' : '#44ff88';
-
-    this.codeText.setText(this.state === 'connected' ? '' : '');
-    this.statusText.setText('').setColor('#888888');
-
-    // Connected banner
-    this.uiContainer.add(
-      this.add.text(GAME_WIDTH / 2, 310, 'CONNECTED!', {
-        fontSize: '28px', fontFamily: 'monospace', color: '#44ff88', fontStyle: 'bold',
-      }).setOrigin(0.5)
-    );
-
-    this.uiContainer.add(
-      this.add.text(GAME_WIDTH / 2, 350, `You are: Player ${networkManager.playerNumber} (${role})`, {
-        fontSize: '16px', fontFamily: 'monospace', color: color,
-      }).setOrigin(0.5)
-    );
-
-    this.uiContainer.add(
-      this.add.text(GAME_WIDTH / 2, 385, `Room: ${networkManager.roomCode}`, {
-        fontSize: '14px', fontFamily: 'monospace', color: '#888899',
-      }).setOrigin(0.5)
-    );
-
-    // Start button (host only) or waiting message
-    if (networkManager.isHost) {
-      this.createButton(GAME_WIDTH / 2, 460, 'START GAME', () => {
-        SFX.uiClick();
-        networkManager.send(NetEventType.GAME_START);
-        this.startGame();
-      });
-    } else {
-      const waitText = this.add.text(GAME_WIDTH / 2, 460, 'Waiting for host to start...', {
-        fontSize: '14px', fontFamily: 'monospace', color: '#667799',
-      }).setOrigin(0.5);
-      this.uiContainer.add(waitText);
-
-      // Listen for game start from host
-      networkManager.on(NetEventType.GAME_START, () => {
-        this.startGame();
-      });
-    }
-
-    // Cancel button
-    this.createButton(GAME_WIDTH / 2, 540, 'LEAVE', () => {
-      SFX.uiClick();
-      networkManager.disconnect();
-      this.showMainMenu();
-    });
-
-    // Handle disconnect
-    networkManager.onDisconnected = () => {
-      this.statusText.setText('Other player disconnected').setColor('#ff4444');
-      this.time.delayedCall(2000, () => this.showMainMenu());
-    };
   }
 
   private startGame(): void {
@@ -328,7 +576,6 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
 
-    // Only accept letters
     if (/^[a-zA-Z]$/.test(event.key) && this.codeInput.length < 4) {
       this.codeInput += event.key.toUpperCase();
       SFX.uiClick();
@@ -338,10 +585,6 @@ export class MenuScene extends Phaser.Scene {
 
   private updateCodeDisplay(): void {
     if (this.state !== 'joining') return;
-
-    const display = this.codeInput.padEnd(4, '_');
-    const cursor = this.inputCursorVisible && this.codeInput.length < 4 ? '|' : ' ';
-    // Show typed letters with underscores for remaining
     let shown = '';
     for (let i = 0; i < 4; i++) {
       if (i < this.codeInput.length) {
@@ -384,9 +627,8 @@ export class MenuScene extends Phaser.Scene {
       bg.setTexture('btn_normal');
       this.tweens.add({ targets: container, scaleX: 1, scaleY: 1, duration: 100 });
     });
-    container.on('pointerdown', callback);
+    container.on('pointerup', callback);
 
-    // Animate in
     container.setAlpha(0);
     container.y += 15;
     this.tweens.add({
