@@ -202,9 +202,9 @@ export class GameScene extends Phaser.Scene {
 
     const scaledDelta = delta * this.gameSpeed;
 
-    // Time warp
+    // Time warp — scales with game speed
     if (this.timeWarpActive) {
-      this.timeWarpDuration -= delta;
+      this.timeWarpDuration -= scaledDelta;
       if (this.timeWarpDuration <= 0) {
         this.timeWarpActive = false;
         if (this.timeWarpOverlay) {
@@ -219,17 +219,17 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (this.timeWarpCooldown > 0) {
-      this.timeWarpCooldown -= delta;
+      this.timeWarpCooldown -= scaledDelta;
       this.updateTimeWarpUI();
     }
 
-    // Specialist ability cooldown + active timer
+    // Specialist ability cooldown + active timer — scale with game speed
     if (this.abilityCooldown > 0) {
-      this.abilityCooldown -= delta;
+      this.abilityCooldown -= scaledDelta;
       if (this.abilityCooldown <= 0) this.abilityCooldown = 0;
     }
     if (this.abilityActive) {
-      this.abilityActiveTimer -= delta;
+      this.abilityActiveTimer -= scaledDelta;
       if (this.abilityActiveTimer <= 0) {
         this.abilityActive = false;
         this.rallyMultiplier = 1;
@@ -239,9 +239,9 @@ export class GameScene extends Phaser.Scene {
     }
     this.updateAbilityUI();
 
-    // Send mode kill streak decay
+    // Send mode kill streak decay — also scales
     if (this.killStreakTimer > 0) {
-      this.killStreakTimer -= delta / 1000;
+      this.killStreakTimer -= scaledDelta / 1000;
       if (this.killStreakTimer <= 0) this.killStreak = 0;
     }
 
@@ -286,8 +286,8 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    // Frog easter egg
-    this.frogTimer -= delta;
+    // Frog easter egg — scales with game speed
+    this.frogTimer -= scaledDelta;
     if (this.frogTimer <= 0 && !this.frogSprite) {
       this.frogTimer = 20000 + Math.random() * 40000;
       if (Math.random() < 0.25) this.spawnFrog();
