@@ -11,7 +11,7 @@ import { Tower } from '../entities/Tower';
 import { Enemy } from '../entities/Enemy';
 import { Projectile, handleProjectileImpact } from '../entities/Projectile';
 import { GridPos, findPath } from '../utils/Pathfinding';
-import { SFX, resumeAudio } from '../utils/SoundGenerator';
+import { SFX, resumeAudio, startMusic, stopMusic, setMasterVolume, getMasterVolume } from '../utils/SoundGenerator';
 import { networkManager, NetEventType } from '../managers/NetworkManager';
 import { VisualEffects } from '../systems/VisualEffects';
 
@@ -111,6 +111,7 @@ export class GameScene extends Phaser.Scene {
   create(): void {
     this.cameras.main.setBackgroundColor(COLORS.bg);
     resumeAudio();
+    startMusic();
 
     // Reset state
     this.gold = STARTING_GOLD;
@@ -519,7 +520,9 @@ export class GameScene extends Phaser.Scene {
     const path = this.gridManager.getPathForSpawn(spawnIndex);
     if (!path) return;
 
-    const enemy = new Enemy(this, type, path, hpScale, speedScale);
+    // Split lanes: 2x money pool means 2x challenge — beef up enemies
+    const modeHpScale = this.gameMode === 'splitlanes' ? 2.0 : 1.0;
+    const enemy = new Enemy(this, type, path, hpScale * modeHpScale, speedScale);
     enemy.setVFX(this.vfx);
     enemy.setCallbacks(
       this.onEnemyDeath.bind(this),
@@ -717,6 +720,7 @@ export class GameScene extends Phaser.Scene {
     this.isVictory = true;
     this.isGameOver = true;
     SFX.victory();
+    stopMusic();
 
     // Golden bloom
     this.cameras.main.flash(500, 255, 215, 0);
@@ -737,6 +741,7 @@ export class GameScene extends Phaser.Scene {
   private onDefeat(): void {
     this.isGameOver = true;
     SFX.defeat();
+    stopMusic();
 
     this.cameras.main.flash(500, 255, 0, 0);
 
@@ -1354,6 +1359,81 @@ export class GameScene extends Phaser.Scene {
     this.waveTimerText = this.add.text(500, 14, '', {
       fontSize: '13px', fontFamily: 'monospace', color: '#888888',
     }).setDepth(81);
+
+    // Volume slider
+    this.createVolumeSlider();
+  }
+
+  private createVolumeSlider(): void {
+    // Slider position in HUD (left side near other indicators, after wave timer area)
+    const sliderX = 720;
+    const sliderY = 24;
+    const sliderW = 100;
+    const sliderH = 6;
+
+    this.add.text(sliderX - 36, 14, 'VOL', {
+      fontSize: '10px', fontFamily: 'monospace', color: '#667799',
+    }).setDepth(81);
+
+    // Track
+    const track = this.add.graphics().setDepth(81);
+    track.fillStyle(0x223344, 1);
+    track.fillRoundedRect(sliderX, sliderY - sliderH / 2, sliderW, sliderH, 3);
+    track.lineStyle(1, 0x445566, 1);
+    track.strokeRoundedRect(sliderX, sliderY - sliderH / 2, sliderW, sliderH, 3);
+
+    // Fill (shows current volume)
+    const fill = this.add.graphics().setDepth(82);
+    const drawFill = (vol: number) => {
+      fill.clear();
+      fill.fillStyle(0x44aaff, 1);
+      fill.fillRoundedRect(sliderX, sliderY - sliderH / 2, Math.max(2, sliderW * vol), sliderH, 3);
+    };
+    drawFill(getMasterVolume());
+
+    // Knob
+    const knobR = 8;
+    const knob = this.add.graphics().setDepth(83);
+    const drawKnob = (vol: number) => {
+      knob.clear();
+      knob.fillStyle(0xccddff, 1);
+      knob.fillCircle(sliderX + sliderW * vol, sliderY, knobR);
+      knob.lineStyle(1, 0x66aacc, 1);
+      knob.strokeCircle(sliderX + sliderW * vol, sliderY, knobR);
+    };
+    drawKnob(getMasterVolume());
+
+    // Volume text
+    const volText = this.add.text(sliderX + sliderW + 10, 14, `${Math.round(getMasterVolume() * 100)}%`, {
+      fontSize: '11px', fontFamily: 'monospace', color: '#88aacc',
+    }).setDepth(81);
+
+    // Hit area for the slider track
+    const hitZone = this.add.rectangle(sliderX + sliderW / 2, sliderY, sliderW + knobR * 2, 32, 0xffffff, 0)
+      .setDepth(84)
+      .setInteractive({ useHandCursor: true, draggable: true });
+
+    let dragging = false;
+    const setVolFromX = (worldX: number) => {
+      const localX = worldX - sliderX;
+      const vol = Math.max(0, Math.min(1, localX / sliderW));
+      setMasterVolume(vol);
+      drawFill(vol);
+      drawKnob(vol);
+      volText.setText(`${Math.round(vol * 100)}%`);
+    };
+
+    hitZone.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      dragging = true;
+      setVolFromX(pointer.x);
+    });
+    hitZone.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (dragging) setVolFromX(pointer.x);
+    });
+    hitZone.on('pointerup', () => { dragging = false; });
+    hitZone.on('pointerout', () => { dragging = false; });
+    // Also listen scene-wide for releases outside the slider
+    this.input.on('pointerup', () => { dragging = false; });
   }
 
   private createTowerPanel(): void {
@@ -1378,26 +1458,26 @@ export class GameScene extends Phaser.Scene {
       const def = TOWERS[towerId];
       const col = i % 3;
       const row = Math.floor(i / 3);
-      const bx = btnStartX + col * btnSpacing;
-      const by = btnStartY + row * 90;
+      // Container positioned at the CENTER of the button
+      const cx = btnStartX + col * btnSpacing + 27;
+      const cy = btnStartY + row * 90 + 27;
 
-      const container = this.add.container(bx, by).setDepth(82);
+      const container = this.add.container(cx, cy).setDepth(82);
 
-      const bg = this.add.image(27, 27, `tower_btn_${towerId}`);
-      const icon = this.add.image(27, 20, `tower_${towerId}`).setScale(0.7);
-      const costText = this.add.text(27, 48, `${def.cost}g`, {
+      // All children at (0,0) relative origin — centered
+      const bg = this.add.image(0, 0, `tower_btn_${towerId}`);
+      const icon = this.add.image(0, -7, `tower_${towerId}`).setScale(0.7);
+      const costText = this.add.text(0, 21, `${this.getTowerCost(towerId)}g`, {
         fontSize: '10px', fontFamily: 'monospace', color: '#ffd700',
       }).setOrigin(0.5);
-      const hotkey = this.add.text(50, 2, `${i + 1}`, {
+      const hotkey = this.add.text(22, -25, `${i + 1}`, {
         fontSize: '9px', fontFamily: 'monospace', color: '#556677',
-      });
+      }).setOrigin(0.5);
 
       container.add([bg, icon, costText, hotkey]);
-      container.setSize(80, 70);
-      container.setInteractive(
-        new Phaser.Geom.Rectangle(-10, -5, 74, 70),
-        Phaser.Geom.Rectangle.Contains
-      );
+      // Default hit area uses setSize centered on (0,0)
+      container.setSize(60, 60);
+      container.setInteractive({ useHandCursor: true });
 
       container.on('pointerup', () => this.selectTowerType(towerId));
       container.on('pointerover', () => {
@@ -1433,43 +1513,39 @@ export class GameScene extends Phaser.Scene {
     const panelX = GRID_OFFSET_X + GRID_COLS * TILE_SIZE + 12;
     const btnY = 460;
 
-    // Upgrade button
-    this.upgradeBtn = this.add.container(panelX + 10, btnY).setDepth(82).setVisible(false);
+    // Upgrade button — container at center
+    this.upgradeBtn = this.add.container(panelX + 10 + 65, btnY + 16).setDepth(82).setVisible(false);
     const upgBg = this.add.graphics();
     upgBg.fillStyle(0x224422, 0.9);
-    upgBg.fillRoundedRect(0, 0, 130, 32, 4);
+    upgBg.fillRoundedRect(-65, -16, 130, 32, 4);
     upgBg.lineStyle(1, 0x44aa44, 0.6);
-    upgBg.strokeRoundedRect(0, 0, 130, 32, 4);
-    const upgText = this.add.text(65, 16, 'UPGRADE [U]', {
+    upgBg.strokeRoundedRect(-65, -16, 130, 32, 4);
+    const upgText = this.add.text(0, 0, 'UPGRADE [U]', {
       fontSize: '12px', fontFamily: 'monospace', color: '#88ff88', fontStyle: 'bold',
     }).setOrigin(0.5);
     this.upgradeBtn.add([upgBg, upgText]);
     this.upgradeBtn.setSize(130, 32);
-    this.upgradeBtn.setInteractive(new Phaser.Geom.Rectangle(0, 0, 130, 32), Phaser.Geom.Rectangle.Contains);
+    this.upgradeBtn.setInteractive({ useHandCursor: true });
     this.upgradeBtn.on('pointerup', () => {
       if (this.selectedTower) this.upgradeTower(this.selectedTower);
     });
-    this.upgradeBtn.on('pointerover', () => upgBg.setAlpha(1.2));
-    this.upgradeBtn.on('pointerout', () => upgBg.setAlpha(1));
 
-    // Sell button
-    this.sellBtn = this.add.container(panelX + 150, btnY).setDepth(82).setVisible(false);
+    // Sell button — container at center
+    this.sellBtn = this.add.container(panelX + 150 + 65, btnY + 16).setDepth(82).setVisible(false);
     const sellBg = this.add.graphics();
     sellBg.fillStyle(0x442222, 0.9);
-    sellBg.fillRoundedRect(0, 0, 130, 32, 4);
+    sellBg.fillRoundedRect(-65, -16, 130, 32, 4);
     sellBg.lineStyle(1, 0xaa4444, 0.6);
-    sellBg.strokeRoundedRect(0, 0, 130, 32, 4);
-    const sellText = this.add.text(65, 16, 'SELL [S]', {
+    sellBg.strokeRoundedRect(-65, -16, 130, 32, 4);
+    const sellText = this.add.text(0, 0, 'SELL [S]', {
       fontSize: '12px', fontFamily: 'monospace', color: '#ff8888', fontStyle: 'bold',
     }).setOrigin(0.5);
     this.sellBtn.add([sellBg, sellText]);
     this.sellBtn.setSize(130, 32);
-    this.sellBtn.setInteractive(new Phaser.Geom.Rectangle(0, 0, 130, 32), Phaser.Geom.Rectangle.Contains);
+    this.sellBtn.setInteractive({ useHandCursor: true });
     this.sellBtn.on('pointerup', () => {
       if (this.selectedTower) this.sellTower(this.selectedTower);
     });
-    this.sellBtn.on('pointerover', () => sellBg.setAlpha(1.2));
-    this.sellBtn.on('pointerout', () => sellBg.setAlpha(1));
   }
 
   private createGiftButton(): void {
@@ -1478,21 +1554,22 @@ export class GameScene extends Phaser.Scene {
     const panelX = GRID_OFFSET_X + GRID_COLS * TILE_SIZE + 12;
     const by = GAME_HEIGHT - 155;
 
-    this.giftBtn = this.add.container(panelX + 10, by).setDepth(82);
+    // Container at button center
+    this.giftBtn = this.add.container(panelX + 10 + 65, by + 16).setDepth(82);
 
     const bg = this.add.graphics();
     bg.fillStyle(0x443322, 0.9);
-    bg.fillRoundedRect(0, 0, 130, 32, 4);
+    bg.fillRoundedRect(-65, -16, 130, 32, 4);
     bg.lineStyle(1, 0xddaa44, 0.7);
-    bg.strokeRoundedRect(0, 0, 130, 32, 4);
+    bg.strokeRoundedRect(-65, -16, 130, 32, 4);
 
-    const label = this.add.text(65, 16, 'GIFT 50G [G]', {
+    const label = this.add.text(0, 0, 'GIFT 50G [G]', {
       fontSize: '11px', fontFamily: 'monospace', color: '#ffd700', fontStyle: 'bold',
     }).setOrigin(0.5);
 
     this.giftBtn.add([bg, label]);
     this.giftBtn.setSize(130, 32);
-    this.giftBtn.setInteractive(new Phaser.Geom.Rectangle(0, 0, 130, 32), Phaser.Geom.Rectangle.Contains);
+    this.giftBtn.setInteractive({ useHandCursor: true });
     this.giftBtn.on('pointerup', () => this.giftGold());
   }
 
@@ -1500,32 +1577,29 @@ export class GameScene extends Phaser.Scene {
     const panelX = GRID_OFFSET_X + GRID_COLS * TILE_SIZE + 12;
     const by = GAME_HEIGHT - 110;
 
-    this.timeWarpBtn = this.add.container(panelX + 10, by).setDepth(82);
+    // Container at button CENTER
+    this.timeWarpBtn = this.add.container(panelX + 10 + 65, by + 18).setDepth(82);
 
     const spec = SPECIALISTS[this.myClass];
     const bg = this.add.graphics();
     bg.fillStyle(0x222244, 0.9);
-    bg.fillRoundedRect(0, 0, 130, 36, 4);
+    bg.fillRoundedRect(-65, -18, 130, 36, 4);
     bg.lineStyle(1, spec.color, 0.7);
-    bg.strokeRoundedRect(0, 0, 130, 36, 4);
+    bg.strokeRoundedRect(-65, -18, 130, 36, 4);
 
-    const label = this.add.text(65, 10, `${spec.abilityName.toUpperCase()} [Q]`, {
+    const label = this.add.text(0, -8, `${spec.abilityName.toUpperCase()} [Q]`, {
       fontSize: '11px', fontFamily: 'monospace',
       color: Phaser.Display.Color.IntegerToColor(spec.color).rgba,
       fontStyle: 'bold',
     }).setOrigin(0.5);
 
-    this.timeWarpCooldownText = this.add.text(65, 25, 'Ready', {
+    this.timeWarpCooldownText = this.add.text(0, 7, 'Ready', {
       fontSize: '9px', fontFamily: 'monospace', color: '#886699',
     }).setOrigin(0.5);
 
     this.timeWarpBtn.add([bg, label, this.timeWarpCooldownText]);
     this.timeWarpBtn.setSize(130, 36);
-    this.timeWarpBtn.setInteractive(
-      new Phaser.Geom.Rectangle(0, 0, 130, 36),
-      Phaser.Geom.Rectangle.Contains
-    );
-
+    this.timeWarpBtn.setInteractive({ useHandCursor: true });
     this.timeWarpBtn.on('pointerup', () => this.activateAbility());
   }
 
@@ -1543,14 +1617,17 @@ export class GameScene extends Phaser.Scene {
 
     const speeds = [1, 2, 3];
     speeds.forEach((speed, i) => {
-      const btn = this.add.container(panelX + 120 + i * 50, by - 2).setDepth(82);
-      const bg = this.add.image(20, 15, `btn_speed_${speed}`);
-      const txt = this.add.text(20, 12, `${speed}x`, {
+      // Container at button center
+      const btnX = panelX + 120 + i * 50 + 20;
+      const btnY = by + 13;
+      const btn = this.add.container(btnX, btnY).setDepth(82);
+      const bg = this.add.image(0, 0, `btn_speed_${speed}`);
+      const txt = this.add.text(0, 0, `${speed}x`, {
         fontSize: '12px', fontFamily: 'monospace', color: '#aabbcc',
       }).setOrigin(0.5);
       btn.add([bg, txt]);
-      btn.setSize(50, 36);
-      btn.setInteractive(new Phaser.Geom.Rectangle(-5, -3, 50, 36), Phaser.Geom.Rectangle.Contains);
+      btn.setSize(44, 34);
+      btn.setInteractive({ useHandCursor: true });
       btn.on('pointerup', () => this.setGameSpeed(speed));
     });
   }
@@ -1573,12 +1650,9 @@ export class GameScene extends Phaser.Scene {
 
     this.startWaveBtn.add([bg, txt]);
     this.startWaveBtn.setSize(180, 32);
-    this.startWaveBtn.setInteractive(
-      new Phaser.Geom.Rectangle(-90, -16, 180, 32),
-      Phaser.Geom.Rectangle.Contains
-    );
+    this.startWaveBtn.setInteractive({ useHandCursor: true });
 
-    this.startWaveBtn.on('pointerdown', () => this.startWave());
+    this.startWaveBtn.on('pointerup', () => this.startWave());
     this.startWaveBtn.on('pointerover', () => {
       this.tweens.add({ targets: this.startWaveBtn, scaleX: 1.05, scaleY: 1.05, duration: 100 });
     });

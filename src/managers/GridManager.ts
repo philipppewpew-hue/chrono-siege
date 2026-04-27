@@ -55,32 +55,112 @@ export class GridManager {
       this.basePoints.push({ x: GRID_COLS - 1, y: by });
     }
 
-    // Blocked terrain — forces maze building and creates strategic choke points
-    const blockedPositions: GridPos[] = [
-      // Top water feature (larger)
-      { x: 4, y: 0 }, { x: 5, y: 0 }, { x: 6, y: 0 }, { x: 5, y: 1 }, { x: 6, y: 1 },
-      // Upper rock wall (forces early pathing decisions)
-      { x: 3, y: 3 }, { x: 4, y: 3 }, { x: 5, y: 3 },
-      // Central rock formation (bigger — key obstacle)
-      { x: 9, y: 4 }, { x: 10, y: 4 },
-      { x: 8, y: 5 }, { x: 9, y: 5 }, { x: 10, y: 5 }, { x: 11, y: 5 },
-      { x: 9, y: 6 }, { x: 10, y: 6 },
-      // Lower corridor blocker
-      { x: 5, y: 8 }, { x: 6, y: 8 },
-      { x: 13, y: 7 }, { x: 14, y: 7 },
-      // Bottom water feature (larger)
-      { x: 13, y: 10 }, { x: 14, y: 10 }, { x: 15, y: 10 },
-      { x: 14, y: 11 }, { x: 15, y: 11 },
-      // Scattered rocks for flavor
-      { x: 3, y: 10 }, { x: 7, y: 1 }, { x: 16, y: 2 }, { x: 17, y: 8 },
-      { x: 12, y: 1 }, { x: 2, y: 6 },
-    ];
+    // Procedurally generate blocked terrain — different layout each game
+    this.generateProceduralObstacles();
+  }
 
-    for (const pos of blockedPositions) {
-      if (pos.x >= 0 && pos.x < GRID_COLS && pos.y >= 0 && pos.y < GRID_ROWS) {
-        this.grid[pos.y][pos.x] = CellType.BLOCKED;
+  /**
+   * Generate random obstacles on the map.
+   * Strategy: place ~4-6 cluster obstacles + scattered single tiles.
+   * After each placement, verify all spawn-to-base paths still exist.
+   */
+  private generateProceduralObstacles(): void {
+    const targetClusters = 4 + Math.floor(Math.random() * 3); // 4-6 clusters
+    const targetSingles = 5 + Math.floor(Math.random() * 4); // 5-8 scattered
+
+    let clustersPlaced = 0;
+    let singlesPlaced = 0;
+    let attempts = 0;
+    const maxAttempts = 200;
+
+    // Place cluster obstacles (2-5 tiles in random shapes)
+    while (clustersPlaced < targetClusters && attempts < maxAttempts) {
+      attempts++;
+      const cx = 2 + Math.floor(Math.random() * (GRID_COLS - 4));
+      const cy = 1 + Math.floor(Math.random() * (GRID_ROWS - 2));
+
+      // Random cluster shape
+      const shape = this.randomClusterShape();
+      const tiles: GridPos[] = shape.map(p => ({ x: cx + p.x, y: cy + p.y }))
+        .filter(p => p.x >= 0 && p.x < GRID_COLS && p.y >= 0 && p.y < GRID_ROWS);
+
+      // Skip if any tile is occupied or too close to spawn/base lanes
+      const valid = tiles.every(t => {
+        if (this.grid[t.y][t.x] !== CellType.EMPTY) return false;
+        // Don't block right next to spawn (column 0-1) or base (last 2 columns)
+        if (t.x <= 1 || t.x >= GRID_COLS - 2) return false;
+        return true;
+      });
+      if (!valid) continue;
+
+      // Try to place the cluster
+      for (const t of tiles) this.grid[t.y][t.x] = CellType.BLOCKED;
+
+      // Verify paths still exist
+      if (this.allPathsExist()) {
+        clustersPlaced++;
+      } else {
+        // Revert
+        for (const t of tiles) this.grid[t.y][t.x] = CellType.EMPTY;
       }
     }
+
+    // Place scattered single tiles
+    attempts = 0;
+    while (singlesPlaced < targetSingles && attempts < maxAttempts) {
+      attempts++;
+      const x = 2 + Math.floor(Math.random() * (GRID_COLS - 4));
+      const y = Math.floor(Math.random() * GRID_ROWS);
+
+      if (this.grid[y][x] !== CellType.EMPTY) continue;
+
+      this.grid[y][x] = CellType.BLOCKED;
+      if (this.allPathsExist()) {
+        singlesPlaced++;
+      } else {
+        this.grid[y][x] = CellType.EMPTY;
+      }
+    }
+  }
+
+  /** Random cluster shape — 2-5 tiles around (0,0) */
+  private randomClusterShape(): GridPos[] {
+    const shapes: GridPos[][] = [
+      // Vertical wall (3 tiles)
+      [{ x: 0, y: 0 }, { x: 0, y: 1 }, { x: 0, y: 2 }],
+      // Horizontal wall (3 tiles)
+      [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }],
+      // L-shape
+      [{ x: 0, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
+      // Square (2x2)
+      [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
+      // Plus
+      [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }],
+      // Diagonal pair
+      [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+      // T-shape
+      [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 1, y: 1 }],
+      // Long horizontal (4 tiles)
+      [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }],
+      // Z-shape
+      [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 1 }],
+      // Single
+      [{ x: 0, y: 0 }],
+    ];
+    return shapes[Math.floor(Math.random() * shapes.length)];
+  }
+
+  /** Verify a path exists from every spawn to at least one base */
+  private allPathsExist(): boolean {
+    for (const spawn of this.spawnPoints) {
+      let found = false;
+      for (const base of this.basePoints) {
+        const path = findPath(this.grid, spawn, base, GRID_COLS, GRID_ROWS);
+        if (path) { found = true; break; }
+      }
+      if (!found) return false;
+    }
+    return true;
   }
 
   private renderGrid(): void {

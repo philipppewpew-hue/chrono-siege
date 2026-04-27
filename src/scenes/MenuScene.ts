@@ -131,64 +131,34 @@ export class MenuScene extends Phaser.Scene {
   private showModeSelect(): void {
     this.clearUI();
     this.state = 'mode_select';
-    this.statusText.setText('Choose a multiplayer mode:');
+    this.statusText.setText('');
 
-    const modes: GameMode[] = ['coop', 'send', 'splitlanes'];
-    const startY = 240;
+    // === COOPERATIVE LABEL ===
+    this.uiContainer.add(
+      this.add.text(GAME_WIDTH / 2, 220, '— COOPERATIVE —', {
+        fontSize: '14px', fontFamily: 'monospace', color: '#88ccaa', fontStyle: 'bold',
+      }).setOrigin(0.5)
+    );
 
-    modes.forEach((mode, i) => {
-      const def = GAME_MODES[mode];
-      const y = startY + i * 100;
-      const card = this.add.container(GAME_WIDTH / 2, y).setDepth(5);
+    // Co-op + Split Lanes side by side
+    const cardW = 300, cardH = 110;
+    const cardGap = 24;
+    const coopX = GAME_WIDTH / 2 - (cardW + cardGap) / 2;
+    const splitX = GAME_WIDTH / 2 + (cardW + cardGap) / 2;
+    const coopY = 300;
 
-      const bg = this.add.graphics();
-      bg.fillStyle(0x1a1a2e, 0.9);
-      bg.fillRoundedRect(-260, -40, 520, 80, 6);
-      bg.lineStyle(2, 0x4488aa, 0.7);
-      bg.strokeRoundedRect(-260, -40, 520, 80, 6);
+    this.makeModeCard(coopX, coopY, cardW, cardH, 'coop', 0x44ccaa, 0);
+    this.makeModeCard(splitX, coopY, cardW, cardH, 'splitlanes', 0x44aaff, 1);
 
-      const name = this.add.text(0, -16, def.name.toUpperCase(), {
-        fontSize: '20px', fontFamily: 'monospace', color: '#ccddff', fontStyle: 'bold',
-      }).setOrigin(0.5);
+    // === COMPETITIVE LABEL ===
+    this.uiContainer.add(
+      this.add.text(GAME_WIDTH / 2, 430, '— COMPETITIVE —', {
+        fontSize: '14px', fontFamily: 'monospace', color: '#ff8866', fontStyle: 'bold',
+      }).setOrigin(0.5)
+    );
 
-      const desc = this.add.text(0, 14, def.description, {
-        fontSize: '13px', fontFamily: 'monospace', color: '#8899aa',
-      }).setOrigin(0.5);
-
-      card.add([bg, name, desc]);
-      card.setSize(520, 80);
-      card.setInteractive(new Phaser.Geom.Rectangle(-260, -40, 520, 80), Phaser.Geom.Rectangle.Contains);
-
-      card.on('pointerover', () => {
-        bg.clear();
-        bg.fillStyle(0x2a2a4e, 0.95);
-        bg.fillRoundedRect(-260, -40, 520, 80, 6);
-        bg.lineStyle(2, 0x66aacc, 1);
-        bg.strokeRoundedRect(-260, -40, 520, 80, 6);
-      });
-      card.on('pointerout', () => {
-        bg.clear();
-        bg.fillStyle(0x1a1a2e, 0.9);
-        bg.fillRoundedRect(-260, -40, 520, 80, 6);
-        bg.lineStyle(2, 0x4488aa, 0.7);
-        bg.strokeRoundedRect(-260, -40, 520, 80, 6);
-      });
-      card.on('pointerup', () => {
-        SFX.uiClick();
-        this.selectedMode = mode;
-        networkManager.gameMode = mode;
-        this.startHosting();
-      });
-
-      this.uiContainer.add(card);
-
-      card.setAlpha(0);
-      card.y += 15;
-      this.tweens.add({
-        targets: card, alpha: 1, y: y,
-        duration: 350, delay: 80 + i * 70, ease: 'Back.easeOut',
-      });
-    });
+    // Send mode below, marked as competitive
+    this.makeModeCard(GAME_WIDTH / 2, 510, cardW * 1.5 + cardGap, cardH, 'send', 0xff6644, 2);
 
     this.createButton(GAME_WIDTH / 2, 580, 'BACK', () => {
       SFX.uiClick();
@@ -357,6 +327,55 @@ export class MenuScene extends Phaser.Scene {
     this.uiContainer.add(card);
   }
 
+  private makeModeCard(x: number, y: number, w: number, h: number, mode: GameMode, accentColor: number, animOrder: number): void {
+    const def = GAME_MODES[mode];
+    const card = this.add.container(x, y).setDepth(5);
+
+    const bg = this.add.graphics();
+    const drawBg = (hover: boolean) => {
+      bg.clear();
+      bg.fillStyle(hover ? 0x2a2a4e : 0x1a1a2e, 0.9);
+      bg.fillRoundedRect(-w / 2, -h / 2, w, h, 6);
+      bg.lineStyle(2, accentColor, hover ? 1 : 0.7);
+      bg.strokeRoundedRect(-w / 2, -h / 2, w, h, 6);
+    };
+    drawBg(false);
+
+    const name = this.add.text(0, -28, def.name.toUpperCase(), {
+      fontSize: '22px', fontFamily: 'monospace',
+      color: Phaser.Display.Color.IntegerToColor(accentColor).rgba,
+      fontStyle: 'bold',
+    }).setOrigin(0.5);
+
+    const desc = this.add.text(0, 12, def.description, {
+      fontSize: '12px', fontFamily: 'monospace', color: '#aabbcc',
+      wordWrap: { width: w - 24 }, align: 'center',
+    }).setOrigin(0.5);
+
+    card.add([bg, name, desc]);
+    // setSize centered on container origin — hit area matches visual exactly
+    card.setSize(w, h);
+    card.setInteractive({ useHandCursor: true });
+
+    card.on('pointerover', () => drawBg(true));
+    card.on('pointerout', () => drawBg(false));
+    card.on('pointerup', () => {
+      SFX.uiClick();
+      this.selectedMode = mode;
+      networkManager.gameMode = mode;
+      this.startHosting();
+    });
+
+    this.uiContainer.add(card);
+
+    card.setAlpha(0);
+    card.y += 15;
+    this.tweens.add({
+      targets: card, alpha: 1, y: y,
+      duration: 350, delay: 80 + animOrder * 70, ease: 'Back.easeOut',
+    });
+  }
+
   private renderClassPicker(startY: number, onPick: (cls: SpecialistClass) => void): void {
     const cardWidth = 240, cardHeight = 130;
     const spacing = 16;
@@ -404,10 +423,7 @@ export class MenuScene extends Phaser.Scene {
 
       card.add([bg, name, desc, abilityLine, abilityDesc]);
       card.setSize(cardWidth, cardHeight);
-      card.setInteractive(
-        new Phaser.Geom.Rectangle(-cardWidth / 2, -cardHeight / 2, cardWidth, cardHeight),
-        Phaser.Geom.Rectangle.Contains
-      );
+      card.setInteractive({ useHandCursor: true });
 
       card.on('pointerover', () => drawBg(true));
       card.on('pointerout', () => drawBg(false));

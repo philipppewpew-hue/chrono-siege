@@ -2,6 +2,10 @@
 
 let audioCtx: AudioContext | null = null;
 
+// Global master volume (0..1) — controlled by the in-game slider
+let masterVolume = 0.7;
+let musicVolume = 0.4; // Music is quieter than SFX by default
+
 function getAudioContext(): AudioContext {
   if (!audioCtx) {
     audioCtx = new AudioContext();
@@ -14,6 +18,18 @@ export function resumeAudio(): void {
   if (ctx.state === 'suspended') {
     ctx.resume();
   }
+}
+
+export function setMasterVolume(v: number): void {
+  masterVolume = Math.max(0, Math.min(1, v));
+  // Apply immediately to music gain
+  if (musicMasterGain) {
+    musicMasterGain.gain.value = musicVolume * masterVolume;
+  }
+}
+
+export function getMasterVolume(): number {
+  return masterVolume;
 }
 
 interface SoundOptions {
@@ -43,9 +59,11 @@ function playSound(opts: SoundOptions): void {
   } = opts;
 
   const now = ctx.currentTime;
+  const effectiveVolume = volume * masterVolume;
+  if (effectiveVolume <= 0.001) return;
   const gainNode = ctx.createGain();
   gainNode.connect(ctx.destination);
-  gainNode.gain.setValueAtTime(volume, now);
+  gainNode.gain.setValueAtTime(effectiveVolume, now);
   gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration);
 
   if (noise) {
@@ -198,3 +216,124 @@ export const SFX = {
     playSound({ frequency: 200, duration: 0.15, type: 'square', volume: 0.08 });
   },
 };
+
+// ============================================================
+// BACKGROUND MUSIC SYNTHESIZER
+// Generates an evolving ambient/melodic background score procedurally.
+// Uses Web Audio API oscillators with built-in envelope and reverb-like decay.
+// ============================================================
+
+let musicMasterGain: GainNode | null = null;
+let musicNoteTimer: number | null = null;
+let musicBeat: number = 0;
+let musicActive: boolean = false;
+
+// Pentatonic minor scale for an atmospheric feel (root A2, A=110)
+// Frequencies in Hz for: A, C, D, E, G across 3 octaves
+const MUSIC_SCALE = [
+  110.00, 130.81, 146.83, 164.81, 196.00, // A2 octave
+  220.00, 261.63, 293.66, 329.63, 392.00, // A3 octave
+  440.00, 523.25, 587.33, 659.25, 783.99, // A4 octave
+];
+
+// Bass line — slower, deeper notes
+const MUSIC_BASS = [55.00, 65.41, 73.42, 82.41, 73.42, 65.41]; // A1, C2, D2, E2 progression
+
+function playMusicNote(freq: number, duration: number, type: OscillatorType, volume: number, attack: number = 0.05): void {
+  if (!audioCtx || !musicMasterGain) return;
+  const now = audioCtx.currentTime;
+
+  const osc = audioCtx.createOscillator();
+  osc.type = type;
+  osc.frequency.value = freq;
+
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(volume, now + attack);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+  // Subtle lowpass for warmth
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 2400;
+  filter.Q.value = 0.6;
+
+  osc.connect(filter);
+  filter.connect(gain);
+  gain.connect(musicMasterGain);
+
+  osc.start(now);
+  osc.stop(now + duration + 0.05);
+}
+
+function musicTick(): void {
+  if (!musicActive) return;
+  musicBeat++;
+
+  // Bass line — every 4 beats
+  if (musicBeat % 4 === 0) {
+    const bassNote = MUSIC_BASS[Math.floor(musicBeat / 4) % MUSIC_BASS.length];
+    playMusicNote(bassNote, 1.8, 'sine', 0.5, 0.1);
+    // Lower harmonic
+    playMusicNote(bassNote / 2, 1.8, 'triangle', 0.25, 0.1);
+  }
+
+  // Lead melody — random notes from scale, occasional rests
+  if (Math.random() > 0.3) {
+    const noteIdx = Math.floor(Math.random() * MUSIC_SCALE.length);
+    const noteFreq = MUSIC_SCALE[noteIdx];
+    // Higher notes are softer
+    const volScale = 1 - (noteIdx / MUSIC_SCALE.length) * 0.5;
+    playMusicNote(noteFreq, 0.6 + Math.random() * 0.4, 'triangle', 0.2 * volScale, 0.05);
+
+    // Occasional harmony
+    if (Math.random() > 0.7) {
+      const harmonyIdx = (noteIdx + 2) % MUSIC_SCALE.length;
+      playMusicNote(MUSIC_SCALE[harmonyIdx], 0.5, 'sine', 0.1 * volScale, 0.05);
+    }
+  }
+
+  // Sparse pad chord every 16 beats
+  if (musicBeat % 16 === 0) {
+    const root = MUSIC_SCALE[2 + Math.floor(Math.random() * 5)];
+    playMusicNote(root, 3.5, 'sine', 0.15, 0.4);
+    playMusicNote(root * 1.25, 3.5, 'sine', 0.1, 0.4); // major third
+    playMusicNote(root * 1.5, 3.5, 'sine', 0.08, 0.4); // fifth
+  }
+}
+
+export function startMusic(): void {
+  if (musicActive) return;
+  const ctx = getAudioContext();
+  if (ctx.state === 'suspended') return;
+
+  if (!musicMasterGain) {
+    musicMasterGain = ctx.createGain();
+    musicMasterGain.gain.value = musicVolume * masterVolume;
+    musicMasterGain.connect(ctx.destination);
+  } else {
+    musicMasterGain.gain.value = musicVolume * masterVolume;
+  }
+
+  musicActive = true;
+  musicBeat = 0;
+
+  // Tick every 500ms (120 BPM equivalent quarter notes)
+  if (musicNoteTimer !== null) clearInterval(musicNoteTimer);
+  musicNoteTimer = window.setInterval(musicTick, 500);
+}
+
+export function stopMusic(): void {
+  musicActive = false;
+  if (musicNoteTimer !== null) {
+    clearInterval(musicNoteTimer);
+    musicNoteTimer = null;
+  }
+  // Fade out
+  if (musicMasterGain && audioCtx) {
+    const now = audioCtx.currentTime;
+    musicMasterGain.gain.cancelScheduledValues(now);
+    musicMasterGain.gain.setValueAtTime(musicMasterGain.gain.value, now);
+    musicMasterGain.gain.linearRampToValueAtTime(0, now + 0.5);
+  }
+}
