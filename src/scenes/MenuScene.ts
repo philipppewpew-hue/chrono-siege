@@ -19,6 +19,7 @@ export class MenuScene extends Phaser.Scene {
   private inputCursorTimer: number = 0;
   private selectedMode: GameMode = 'coop';
   private myClass: SpecialistClass = 'commander';
+  private gameStarted: boolean = false;
 
   constructor() {
     super({ key: 'MenuScene' });
@@ -30,6 +31,7 @@ export class MenuScene extends Phaser.Scene {
     this.codeInput = '';
     this.selectedMode = 'coop';
     this.myClass = 'commander';
+    this.gameStarted = false;
 
     networkManager.disconnect();
 
@@ -255,9 +257,19 @@ export class MenuScene extends Phaser.Scene {
 
     if (networkManager.isHost) {
       this.createButton(GAME_WIDTH / 2, 510, 'START GAME', () => {
+        if (this.gameStarted) return;
+        this.gameStarted = true;
         SFX.uiClick();
+        // Send GAME_START a couple times to handle any drop, then start.
+        // Slight delay before scene change ensures the message is flushed
+        // through the WebRTC data channel before the menu is destroyed.
         networkManager.send(NetEventType.GAME_START);
-        this.startGame();
+        this.time.delayedCall(150, () => {
+          networkManager.send(NetEventType.GAME_START);
+        });
+        this.time.delayedCall(500, () => {
+          this.startGame();
+        });
       });
     } else {
       const waitText = this.add.text(GAME_WIDTH / 2, 510, 'Waiting for host to start...', {
@@ -275,9 +287,8 @@ export class MenuScene extends Phaser.Scene {
         },
       });
 
-      networkManager.on(NetEventType.GAME_START, () => {
-        this.startGame();
-      });
+      // Note: GAME_START listener is registered earlier in attemptJoin()
+      // so it works even if the host clicks Start before guest reaches lobby.
     }
 
     // Change class button
@@ -547,6 +558,15 @@ export class MenuScene extends Phaser.Scene {
         }
       });
 
+      // CRITICAL: register GAME_START listener IMMEDIATELY on join.
+      // If host clicks Start before guest picks a class, the message
+      // could arrive before showLobbyReady() registers the listener.
+      networkManager.on(NetEventType.GAME_START, () => {
+        if (this.gameStarted) return;
+        this.gameStarted = true;
+        this.startGame();
+      });
+
       await networkManager.joinGame(this.codeInput);
       SFX.waveStart();
       // After connection, wait briefly for mode info to arrive
@@ -562,6 +582,10 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private startGame(): void {
+    // Guard against double-invocation (e.g. duplicate GAME_START messages)
+    if ((this as any)._startingGame) return;
+    (this as any)._startingGame = true;
+
     this.cameras.main.fadeOut(400, 0, 0, 0);
     this.time.delayedCall(400, () => {
       this.scene.start('GameScene');
