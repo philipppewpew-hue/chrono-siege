@@ -5,7 +5,7 @@ import {
   TOWERS, TOWER_ORDER, COLORS,
   GameMode, SpecialistClass, SPECIALISTS,
 } from '../config';
-import { GridManager, CellType } from '../managers/GridManager';
+import { GridManager, CellType, seedFromRoomCode } from '../managers/GridManager';
 import { WaveManager } from '../managers/WaveManager';
 import { Tower } from '../entities/Tower';
 import { Enemy } from '../entities/Enemy';
@@ -143,6 +143,7 @@ export class GameScene extends Phaser.Scene {
     this.goldP2 = STARTING_GOLD;
     this.livesP1 = STARTING_LIVES;
     this.livesP2 = STARTING_LIVES;
+    (this as any)._lastRealNow = 0;
 
     // Multiplayer setup
     this.isMultiplayer = networkManager.isMultiplayer && networkManager.isConnected;
@@ -151,7 +152,11 @@ export class GameScene extends Phaser.Scene {
     this.peerClass = networkManager.peerClass || 'commander';
 
     // Initialize managers
-    this.gridManager = new GridManager(this);
+    // Seed map with room code in MP so both players get the same layout
+    const mapSeed = networkManager.isMultiplayer && networkManager.roomCode
+      ? seedFromRoomCode(networkManager.roomCode)
+      : (Math.random() * 1e9) | 0;
+    this.gridManager = new GridManager(this, mapSeed);
     this.waveManager = new WaveManager();
     this.waveManager.setCallbacks(
       this.spawnEnemy.bind(this),
@@ -200,11 +205,27 @@ export class GameScene extends Phaser.Scene {
   update(time: number, delta: number): void {
     if (this.isPaused || this.isGameOver) return;
 
+    // Use real wall-clock delta so wave timing stays in sync even
+    // when a player's tab is minimized/backgrounded. Phaser's delta is
+    // throttled by the browser; Date.now() is not.
+    const realNow = Date.now();
+    if ((this as any)._lastRealNow > 0) {
+      delta = realNow - (this as any)._lastRealNow;
+      // Cap to avoid huge jumps on first focus (60s max)
+      if (delta > 60000) delta = 60000;
+    }
+    (this as any)._lastRealNow = realNow;
+
     const scaledDelta = delta * this.gameSpeed;
 
-    // Time warp — scales with game speed
+    // Cooldowns only tick while a wave is active — players can't
+    // charge abilities during the no-wave break phase.
+    const wavePhase = this.waveManager.isWaveActive;
+    const cooldownDelta = wavePhase ? scaledDelta : 0;
+
+    // Time warp — scales with game speed (and wave phase)
     if (this.timeWarpActive) {
-      this.timeWarpDuration -= scaledDelta;
+      this.timeWarpDuration -= cooldownDelta;
       if (this.timeWarpDuration <= 0) {
         this.timeWarpActive = false;
         if (this.timeWarpOverlay) {
@@ -219,17 +240,17 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (this.timeWarpCooldown > 0) {
-      this.timeWarpCooldown -= scaledDelta;
+      this.timeWarpCooldown -= cooldownDelta;
       this.updateTimeWarpUI();
     }
 
-    // Specialist ability cooldown + active timer — scale with game speed
+    // Specialist ability cooldown + active timer
     if (this.abilityCooldown > 0) {
-      this.abilityCooldown -= scaledDelta;
+      this.abilityCooldown -= cooldownDelta;
       if (this.abilityCooldown <= 0) this.abilityCooldown = 0;
     }
     if (this.abilityActive) {
-      this.abilityActiveTimer -= scaledDelta;
+      this.abilityActiveTimer -= cooldownDelta;
       if (this.abilityActiveTimer <= 0) {
         this.abilityActive = false;
         this.rallyMultiplier = 1;
@@ -280,17 +301,18 @@ export class GameScene extends Phaser.Scene {
     // Multiplayer: host periodically syncs gold/lives
     if (this.isMultiplayer && networkManager.isHost) {
       this.goldSyncTimer += delta;
-      if (this.goldSyncTimer > 2000) {
+      if (this.goldSyncTimer > 8000) {
         this.goldSyncTimer = 0;
         networkManager.send(NetEventType.GOLD_SYNC, { gold: this.gold, lives: this.lives });
       }
     }
 
-    // Frog easter egg — scales with game speed
+    // Frog easter egg — rare drop, scales with game speed.
+    // Average appearance: roughly once every ~10-15 minutes.
     this.frogTimer -= scaledDelta;
     if (this.frogTimer <= 0 && !this.frogSprite) {
-      this.frogTimer = 20000 + Math.random() * 40000;
-      if (Math.random() < 0.25) this.spawnFrog();
+      this.frogTimer = 90000 + Math.random() * 90000; // 1.5–3 min between checks
+      if (Math.random() < 0.12) this.spawnFrog();      // 12% chance per check
     }
 
     this.updateUI();
@@ -403,7 +425,10 @@ export class GameScene extends Phaser.Scene {
     // Receive tower placement from peer
     networkManager.on(NetEventType.TOWER_PLACE, (event) => {
       const { x, y, towerId, player } = event.data;
-      this.executeTowerPlace(x, y, towerId, player);
+      // In coop mode gold is shared — deduct on receiver too so both
+      // clients track the same gold pool deterministically.
+      const deductOnReceive = this.gameMode === 'coop';
+      this.executeTowerPlace(x, y, towerId, player, deductOnReceive);
     });
 
     // Receive tower upgrade from peer
@@ -413,7 +438,11 @@ export class GameScene extends Phaser.Scene {
       if (tower) {
         const cost = tower.upgradeCost;
         if (cost !== null) {
-          this.gold -= cost;
+          // In coop, deduct from shared pool. In split lanes,
+          // the placer already paid from their own pool — don't double-deduct.
+          if (this.gameMode === 'coop') {
+            this.spendGold(cost);
+          }
           tower.upgrade();
         }
       }
@@ -444,11 +473,22 @@ export class GameScene extends Phaser.Scene {
       this.updateSpeedUI();
     });
 
-    // Gold/lives sync from host (guest only)
+    // Gold/lives sync from host (guest only) — only for large drift
+    // since both sides now deduct deterministically. Small differences
+    // are kept local to avoid clobbering recent spends.
     if (!networkManager.isHost) {
       networkManager.on(NetEventType.GOLD_SYNC, (event) => {
-        this.gold = event.data.gold;
-        this.lives = event.data.lives;
+        const remoteGold = event.data.gold;
+        const remoteLives = event.data.lives;
+        // Only correct if drift is significant (> 25g) to avoid
+        // overwriting a fresh local spend with a stale host value.
+        if (Math.abs(this.gold - remoteGold) > 25) {
+          this.gold = remoteGold;
+        }
+        // Lives are usually accurate from local enemy.reachBase, but sync if drifted
+        if (Math.abs(this.lives - remoteLives) > 1) {
+          this.lives = remoteLives;
+        }
       });
     }
 
@@ -1874,7 +1914,9 @@ export class GameScene extends Phaser.Scene {
 
     this.frogSprite.on('pointerup', () => {
       if (!this.frogSprite) return;
-      this.gold += 200;
+      // Use addGold so it works correctly across all modes (split lanes etc.)
+      this.addGold(200);
+      this.updateUI();
       SFX.goldEarned();
 
       // Funny ribbit sound

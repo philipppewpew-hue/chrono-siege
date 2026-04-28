@@ -21,11 +21,13 @@ export class GridManager {
   private scene: Phaser.Scene;
   private tileSprites: Phaser.GameObjects.Image[][] = [];
   private pathOverlay: Phaser.GameObjects.Graphics;
+  private rng: () => number;
 
-  constructor(scene: Phaser.Scene) {
+  constructor(scene: Phaser.Scene, seed?: number) {
     this.scene = scene;
     this.grid = [];
     this.pathOverlay = scene.add.graphics();
+    this.rng = makeSeededRandom(seed ?? (Math.random() * 1e9) | 0);
 
     this.initGrid();
     this.renderGrid();
@@ -65,8 +67,9 @@ export class GridManager {
    * After each placement, verify all spawn-to-base paths still exist.
    */
   private generateProceduralObstacles(): void {
-    const targetClusters = 4 + Math.floor(Math.random() * 3); // 4-6 clusters
-    const targetSingles = 5 + Math.floor(Math.random() * 4); // 5-8 scattered
+    const r = this.rng;
+    const targetClusters = 4 + Math.floor(r() * 3); // 4-6 clusters
+    const targetSingles = 5 + Math.floor(r() * 4); // 5-8 scattered
 
     let clustersPlaced = 0;
     let singlesPlaced = 0;
@@ -76,8 +79,8 @@ export class GridManager {
     // Place cluster obstacles (2-5 tiles in random shapes)
     while (clustersPlaced < targetClusters && attempts < maxAttempts) {
       attempts++;
-      const cx = 2 + Math.floor(Math.random() * (GRID_COLS - 4));
-      const cy = 1 + Math.floor(Math.random() * (GRID_ROWS - 2));
+      const cx = 2 + Math.floor(r() * (GRID_COLS - 4));
+      const cy = 1 + Math.floor(r() * (GRID_ROWS - 2));
 
       // Random cluster shape
       const shape = this.randomClusterShape();
@@ -109,8 +112,8 @@ export class GridManager {
     attempts = 0;
     while (singlesPlaced < targetSingles && attempts < maxAttempts) {
       attempts++;
-      const x = 2 + Math.floor(Math.random() * (GRID_COLS - 4));
-      const y = Math.floor(Math.random() * GRID_ROWS);
+      const x = 2 + Math.floor(r() * (GRID_COLS - 4));
+      const y = Math.floor(r() * GRID_ROWS);
 
       if (this.grid[y][x] !== CellType.EMPTY) continue;
 
@@ -147,7 +150,7 @@ export class GridManager {
       // Single
       [{ x: 0, y: 0 }],
     ];
-    return shapes[Math.floor(Math.random() * shapes.length)];
+    return shapes[Math.floor(this.rng() * shapes.length)];
   }
 
   /** Verify a path exists from every spawn to at least one base */
@@ -304,4 +307,28 @@ export class GridManager {
       }
     }
   }
+}
+
+/**
+ * Seeded PRNG (mulberry32) — deterministic for a given seed.
+ * Used so both multiplayer clients generate the same map.
+ */
+function makeSeededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return function() {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Hash a room code to a numeric seed */
+export function seedFromRoomCode(code: string): number {
+  let h = 5381;
+  for (let i = 0; i < code.length; i++) {
+    h = ((h << 5) - h + code.charCodeAt(i)) | 0;
+  }
+  return h | 0;
 }
